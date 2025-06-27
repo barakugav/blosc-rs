@@ -48,7 +48,7 @@ fn build_c_lib() {
     if !blosc_dir.exists() {
         std::fs::create_dir_all(&blosc_dir).expect("Failed to create c-blosc directory");
         Command::new("git")
-            .args(&[
+            .args([
                 "clone",
                 "--depth",
                 "1",
@@ -59,9 +59,8 @@ fn build_c_lib() {
             ])
             .current_dir(&blosc_dir)
             .status()
-            .map_err(|e| {
+            .inspect_err(|_| {
                 let _ = std::fs::remove_dir_all(&blosc_dir);
-                e
             })
             .expect("Failed to clone c-blosc repository");
     }
@@ -69,7 +68,7 @@ fn build_c_lib() {
     let blosc_build_dir = blosc_build_dir();
     std::fs::create_dir_all(&blosc_build_dir).expect("Failed to create c-blosc build directory");
     Command::new("cmake")
-        .args(&[
+        .args([
             "-S",
             ".",
             "-B",
@@ -84,7 +83,7 @@ fn build_c_lib() {
         .status()
         .expect("Failed to configure c-blosc build");
     Command::new("cmake")
-        .args(&["--build", "."])
+        .args(["--build", "."])
         .current_dir(&blosc_build_dir)
         .status()
         .expect("Failed to build c-blosc");
