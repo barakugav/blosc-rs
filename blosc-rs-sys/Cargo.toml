@@ -17,3 +17,7 @@ categories = ["bindings", "compression"]
 
 [build-dependencies]
 bindgen = "0.72"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

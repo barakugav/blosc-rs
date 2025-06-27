@@ -1,3 +1,5 @@
+//! Unsafe Rust bindings for blosc - a blocking, shuffling and lossless compression library.
+
 mod c_bridge {
     #![allow(dead_code)]
     #![allow(unused_imports)]
