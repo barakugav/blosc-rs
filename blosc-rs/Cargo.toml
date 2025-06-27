@@ -2,6 +2,13 @@
 name = "blosc-rs"
 version = "0.1.0"
 edition = "2021"
+authors = ["Barak Ugav <barakugav@gmail.com>"]
+description = "Unsafe Rust bindings for blosc - a blocking, shuffling and lossless compression library"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/barakugav/blosc-rs"
+keywords = ["blosc", "bindings", "compression"]
+categories = ["bindings", "compression"]
 
 [dependencies]
 blosc-rs-sys = { path = "../blosc-rs-sys" }

@@ -1,7 +1,73 @@
+#![cfg_attr(deny_warnings, deny(warnings))]
+#![cfg_attr(deny_warnings, deny(missing_docs))]
+#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+
+//! Rust bindings for blosc - a blocking, shuffling and lossless compression library.
+//!
+//! Provide a safe interface to the [blosc](https://github.com/Blosc/c-blosc) library.
+//!
+//! # Getting Started
+//!
+//! To use this library, add the following to your `Cargo.toml`:
+//! ```toml
+//! [dependencies]
+//! blosc-rs = "0.1"
+//!
+//! # Or alternatively, rename the crate to `blosc`
+//! blosc = { package = "blosc-rs", version = "0.1" }
+//! ```
+//!
+//! In the following example we compress a vector of integers and then decompress it back:
+//! ```rust
+//! use blosc_rs::{CLevel, CompressAlgo, Shuffle, compress, decompress};
+//!
+//! let data: [i32; 7] = [1, 2, 3, 4, 5, 6, 7];
+//! let data_bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * std::mem::size_of::<i32>()) };
+//! let numinternalthreads = 4;
+//! let compressed = compress(
+//!     CLevel::L5,
+//!     Shuffle::Byte,
+//!     std::mem::size_of::<i32>(), // itemsize
+//!     data_bytes,
+//!     &CompressAlgo::Blosclz,
+//!     None, // automatic block size
+//!     numinternalthreads,
+//! ).unwrap();
+//! let decompressed = decompress(
+//!     &compressed,
+//!     numinternalthreads,
+//! ).unwrap();
+//! // SAFETY: we know the data is of type i32
+//! let decompressed: &[i32] = unsafe { std::slice::from_raw_parts(decompressed.as_ptr() as *const i32, decompressed.len() / std::mem::size_of::<i32>()) };
+//! assert_eq!(data, *decompressed);
+//! ```
+
 use std::ffi::{CStr, CString};
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 
+/// Compress a block of data in the `src` buffer and returns the compressed data.
+///
+/// Note that this function allocates a new `Vec<u8>` for the compressed data, with the maximum possible size required
+/// for the compressed data, which may be larger than the actual compressed data size. If this function is used in a
+/// critical performance path, consider using `compress_into` instead, which allows you to provide a pre-allocated
+/// buffer, which can be used repeatedly without the overhead of allocations.
+///
+/// # Arguments
+///
+/// * `clevel`: The desired compression level.
+/// * `shuffle`: Specifies which (if any) shuffle compression filters should be applied.
+/// * `typesize`: The number of bytes for the atomic type in the binary `src` buffer. This is mainly useful for the
+///   shuffle filters. For implementation reasons, only a `typesize` in the range 1 < `typesize` < 256 will allow the
+///   shuffle filter to work. When `typesize` is not in this range, shuffle will be silently disabled.
+/// * `src`: The source data to compress.
+/// * `compressor`: The compression algorithm to use.
+/// * `blocksize`: Optional block size for compression. If `None`, an automatic block size will be used.
+/// * `numinternalthreads`: The number of threads to use internally.
+///
+/// # Returns
+///
+/// A `Result` containing the compressed data as a `Vec<u8>`, or a `CompressError` if an error occurs.
 pub fn compress(
     clevel: CLevel,
     shuffle: Shuffle,
@@ -32,6 +98,24 @@ pub fn compress(
     Ok(vec)
 }
 
+/// Compress a block of data in the `src` buffer into the `dst` buffer.
+///
+/// # Arguments
+///
+/// * `clevel`: The desired compression level.
+/// * `shuffle`: Specifies which (if any) shuffle compression filters should be applied.
+/// * `typesize`: The number of bytes for the atomic type in the binary `src` buffer. This is mainly useful for the
+///   shuffle filters. For implementation reasons, only a `typesize` in the range 1 < `typesize` < 256 will allow the
+///   shuffle filter to work. When `typesize` is not in this range, shuffle will be silently disabled.
+/// * `src`: The source data to compress.
+/// * `dst`: The destination buffer where the compressed data will be written.
+/// * `compressor`: The compression algorithm to use.
+/// * `blocksize`: Optional block size for compression. If `None`, an automatic block size will be used.
+/// * `numinternalthreads`: The number of threads to use internally.
+///
+/// # Returns
+///
+/// A `Result` containing the number of bytes written to the `dst` buffer, or a `CompressError` if an error occurs.
 pub fn compress_into(
     clevel: CLevel,
     shuffle: Shuffle,
@@ -69,14 +153,21 @@ pub fn compress_into(
     }
 }
 
+/// Error that can occur during compression.
 #[derive(thiserror::Error, Debug)]
 pub enum CompressError {
+    /// Error indicating that the destination buffer is too small to hold the compressed data.
     #[error("destination buffer is too small")]
     DestinationBufferTooSmall,
+    /// blosc internal error.
     #[error("blosc internal error: {0}")]
     InternalError(i32),
 }
 
+/// Represents the compression levels used by Blosc.
+///
+/// The levels range from 0 to 9, where 0 is no compression and 9 is maximum compression.
+#[allow(missing_docs)]
 #[repr(i32)]
 pub enum CLevel {
     L0 = 0,
@@ -110,16 +201,21 @@ impl TryFrom<i32> for CLevel {
     }
 }
 
+/// Represents the shuffle filters used by Blosc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Shuffle {
+    /// no shuffle
     None = blosc_rs_sys::BLOSC_NOSHUFFLE,
+    /// byte-wise shuffle
     Byte = blosc_rs_sys::BLOSC_SHUFFLE,
+    /// bit-wise shuffle
     Bit = blosc_rs_sys::BLOSC_BITSHUFFLE,
 }
 
+/// Represents the compression algorithms supported by Blosc.
 #[derive(Debug, Clone, PartialEq, Eq)]
-
+#[allow(missing_docs)]
 pub enum CompressAlgo {
     Blosclz,
     Lz4,
@@ -143,6 +239,16 @@ impl AsRef<CStr> for CompressAlgo {
     }
 }
 
+/// Decompress a block of compressed data in `src` and returns the decompressed data.
+///
+/// # Arguments
+///
+/// * `src`: The compressed data to decompress.
+/// * `numinternalthreads`: The number of threads to use internally.
+///
+/// # Returns
+///
+/// A `Result` containing the decompressed data as a `Vec<u8>`, or a `DecompressError` if an error occurs.
 pub fn decompress(src: &[u8], numinternalthreads: u32) -> Result<Vec<u8>, DecompressError> {
     let dst_len = validate_compressed_slice_and_get_uncompressed_len(src)
         .ok_or(DecompressError::DecompressingError)?;
@@ -156,6 +262,18 @@ pub fn decompress(src: &[u8], numinternalthreads: u32) -> Result<Vec<u8>, Decomp
     let vec = unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(dst) };
     Ok(vec)
 }
+
+/// Decompress a block of compressed data in `src` into the `dst` buffer.
+///
+/// # Arguments
+///
+/// * `src`: The compressed data to decompress.
+/// * `dst`: The destination buffer where the decompressed data will be written.
+/// * `numinternalthreads`: The number of threads to use internally.
+///
+/// # Returns
+///
+/// A `Result` containing the number of bytes written to the `dst` buffer, or a `DecompressError` if an error occurs.
 pub fn decompress_into(
     src: &[u8],
     dst: &mut [MaybeUninit<u8>],
@@ -190,12 +308,16 @@ unsafe fn decompress_into_unchecked(
     }
 }
 
+/// Error that can occur during decompression.
 #[derive(thiserror::Error, Debug)]
 pub enum DecompressError {
+    /// Error indicating that the destination buffer is too small to hold the decompressed data.
     #[error("destination buffer is too small")]
     DestinationBufferTooSmall,
+    /// Error indicating that the data could not be decompressed.
     #[error("failed to decompress the data")]
     DecompressingError,
+    /// blosc internal error.
     #[error("blosc internal error: {0}")]
     InternalError(i32),
 }
