@@ -116,6 +116,7 @@ pub fn compress(
 /// # Returns
 ///
 /// A `Result` containing the number of bytes written to the `dst` buffer, or a `CompressError` if an error occurs.
+#[allow(clippy::too_many_arguments)]
 pub fn compress_into(
     clevel: CLevel,
     shuffle: Shuffle,
@@ -136,7 +137,7 @@ pub fn compress_into(
             dst.as_mut_ptr() as *mut std::ffi::c_void,
             dst.len(),
             compressor.as_ref().as_ptr(),
-            blocksize.map(|b| b.get() as usize).unwrap_or(0),
+            blocksize.map(|b| b.get()).unwrap_or(0),
             numinternalthreads as std::ffi::c_int,
         )
     };
@@ -228,12 +229,12 @@ pub enum CompressAlgo {
 impl AsRef<CStr> for CompressAlgo {
     fn as_ref(&self) -> &CStr {
         match self {
-            CompressAlgo::Blosclz => CStr::from_bytes_with_nul(b"blosclz\0").unwrap(),
-            CompressAlgo::Lz4 => CStr::from_bytes_with_nul(b"lz4\0").unwrap(),
-            CompressAlgo::Lz4hc => CStr::from_bytes_with_nul(b"lz4hc\0").unwrap(),
-            // CompressAlgo::Snappy => CStr::from_bytes_with_nul(b"snappy\0").unwrap(),
-            CompressAlgo::Zlib => CStr::from_bytes_with_nul(b"zlib\0").unwrap(),
-            CompressAlgo::Zstd => CStr::from_bytes_with_nul(b"zstd\0").unwrap(),
+            CompressAlgo::Blosclz => c"blosclz",
+            CompressAlgo::Lz4 => c"lz4",
+            CompressAlgo::Lz4hc => c"lz4hc",
+            // CompressAlgo::Snappy => c"snappy",
+            CompressAlgo::Zlib => c"zlib",
+            CompressAlgo::Zstd => c"zstd",
             CompressAlgo::Other(c) => c.as_ref(),
         }
     }

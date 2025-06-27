@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request: {}
+
+concurrency:
+  # on main, group = workflow-run_id
+  # on PR, group = workflow-PR_number
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-22.04, macos-latest]
+    steps:
+      - name: Repo checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      # - name: Install C++ dependencies
+      #   if: runner.os == 'Linux'
+      #   run: sudo apt-get install libc++-dev
+      - name: Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.77.0
+          components: clippy
+          cache-workspaces: |
+            blosc-rs
+            blosc-rs-sys
+
+      - name: Build blosc-rs-sys
+        run: cargo build
+        working-directory: blosc-rs-sys
+      - name: Build blosc-rs
+        run: cargo build
+        working-directory: blosc-rs
+
+      - name: Clippy blosc-rs-sys
+        uses: auguwu/clippy-action@1.4.0
+        with:
+          working-directory: blosc-rs-sys
+          check-args: --all-features
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Clippy blosc-rs
+        uses: auguwu/clippy-action@1.4.0
+        with:
+          working-directory: blosc-rs
+          check-args: --all-features
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Test blosc-rs-sys
+        run: cargo test --all-features
+        working-directory: blosc-rs-sys
+      - name: Test blosc-rs
+        run: cargo test --all-features
+        working-directory: blosc-rs
+
+  rust-version-check-clippy:
+    # check that we can build using different rust versions:
+    # - the minimal rust version that is specified by this crate
+    # - the latest stable version
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust-version: ["msrv", "stable"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Determine Rust version
+        id: rust-version
+        run: |
+          if [ "${{ matrix.rust-version }}" = "stable" ]; then
+            rust_version="stable"
+          else
+            cargo install toml-cli
+            rust_version=$(toml get Cargo.toml package.rust-version --raw)
+          fi
+          echo "Rust version: '$rust_version'"
+          echo "rust_version=$rust_version" >> "$GITHUB_OUTPUT"
+        working-directory: blosc-rs
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ steps.rust-version.outputs.rust_version }}
+          components: clippy
+          cache-workspaces: |
+            blosc-rs
+            blosc-rs-sys
+
+      - name: cargo check blosc-rs
+        run: cargo check --all-features
+        working-directory: blosc-rs
+      - name: cargo clippy blosc-rs
+        uses: auguwu/clippy-action@1.4.0
+        with:
+          working-directory: blosc-rs
+          check-args: --all-features
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: cargo check blosc-rs-sys
+        run: cargo check --all-features
+        working-directory: blosc-rs-sys
+      - name: cargo clippy blosc-rs-sys
+        uses: auguwu/clippy-action@1.4.0
+        with:
+          working-directory: blosc-rs-sys
+          check-args: --all-features
+          token: ${{ secrets.GITHUB_TOKEN }}
