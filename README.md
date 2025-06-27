@@ -1,4 +1,9 @@
 # blosc-rs
+
+[![Crates.io](https://img.shields.io/crates/v/blosc-rs.svg)](https://crates.io/crates/blosc-rs/)
+[![Documentation](https://docs.rs/blosc-rs/badge.svg)](https://docs.rs/blosc-rs/)
+![License](https://img.shields.io/crates/l/blosc-rs)
+
 Rust bindings for blosc - a blocking, shuffling and lossless compression library.
 
 Provide a safe interface to the [blosc](https://github.com/Blosc/c-blosc) library.
