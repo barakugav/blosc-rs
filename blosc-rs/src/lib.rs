@@ -5,6 +5,7 @@
 //! Rust bindings for blosc - a blocking, shuffling and lossless compression library.
 //!
 //! Provide a safe interface to the [blosc](https://github.com/Blosc/c-blosc) library.
+//! The crate has zero dependencies.
 //!
 //! # Getting Started
 //!
@@ -22,7 +23,13 @@
 //! use blosc_rs::{CLevel, CompressAlgo, Shuffle, compress, decompress};
 //!
 //! let data: [i32; 7] = [1, 2, 3, 4, 5, 6, 7];
-//! let data_bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * std::mem::size_of::<i32>()) };
+//!
+//! let data_bytes = unsafe {
+//!     std::slice::from_raw_parts(
+//!         data.as_ptr() as *const u8,
+//!         data.len() * std::mem::size_of::<i32>(),
+//!     )
+//! };
 //! let numinternalthreads = 4;
 //! let compressed = compress(
 //!     CLevel::L5,
@@ -32,13 +39,18 @@
 //!     &CompressAlgo::Blosclz,
 //!     None, // automatic block size
 //!     numinternalthreads,
-//! ).unwrap();
-//! let decompressed = decompress(
-//!     &compressed,
-//!     numinternalthreads,
-//! ).unwrap();
+//! )
+//! .unwrap();
+//!
+//! let decompressed = decompress(&compressed, numinternalthreads).unwrap();
 //! // SAFETY: we know the data is of type i32
-//! let decompressed: &[i32] = unsafe { std::slice::from_raw_parts(decompressed.as_ptr() as *const i32, decompressed.len() / std::mem::size_of::<i32>()) };
+//! let decompressed: &[i32] = unsafe {
+//!     std::slice::from_raw_parts(
+//!         decompressed.as_ptr() as *const i32,
+//!         decompressed.len() / std::mem::size_of::<i32>(),
+//!     )
+//! };
+//!
 //! assert_eq!(data, *decompressed);
 //! ```
 
@@ -46,12 +58,24 @@ use std::ffi::{CStr, CString};
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 
+/// The version of the underlying C-blosc library used by this crate.
+pub const BLOSC_C_VERSION: &str = {
+    let version = match CStr::from_bytes_until_nul(blosc_rs_sys::BLOSC_VERSION_STRING) {
+        Ok(v) => v,
+        Err(_) => unreachable!(),
+    };
+    match version.to_str() {
+        Ok(s) => s,
+        Err(_) => unreachable!(),
+    }
+};
+
 /// Compress a block of data in the `src` buffer and returns the compressed data.
 ///
-/// Note that this function allocates a new `Vec<u8>` for the compressed data, with the maximum possible size required
-/// for the compressed data, which may be larger than the actual compressed data size. If this function is used in a
-/// critical performance path, consider using `compress_into` instead, which allows you to provide a pre-allocated
-/// buffer, which can be used repeatedly without the overhead of allocations.
+/// Note that this function allocates a new `Vec<u8>` for the compressed data with the maximum possible size required
+/// for it (uncompressed size + 16), which may be larger than whats actually needed. If this function is used in a
+/// critical performance path, consider using `compress_into` instead, allowing you to provide a pre-allocated
+/// buffer which can be used repeatedly without the overhead of allocations.
 ///
 /// # Arguments
 ///
@@ -155,15 +179,24 @@ pub fn compress_into(
 }
 
 /// Error that can occur during compression.
-#[derive(thiserror::Error, Debug)]
+#[derive(Debug)]
 pub enum CompressError {
     /// Error indicating that the destination buffer is too small to hold the compressed data.
-    #[error("destination buffer is too small")]
     DestinationBufferTooSmall,
     /// blosc internal error.
-    #[error("blosc internal error: {0}")]
     InternalError(i32),
 }
+impl std::fmt::Display for CompressError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompressError::DestinationBufferTooSmall => {
+                f.write_str("destination buffer is too small")
+            }
+            CompressError::InternalError(status) => write!(f, "blosc internal error: {status}"),
+        }
+    }
+}
+impl std::error::Error for CompressError {}
 
 /// Represents the compression levels used by Blosc.
 ///
@@ -310,18 +343,27 @@ unsafe fn decompress_into_unchecked(
 }
 
 /// Error that can occur during decompression.
-#[derive(thiserror::Error, Debug)]
+#[derive(Debug)]
 pub enum DecompressError {
     /// Error indicating that the destination buffer is too small to hold the decompressed data.
-    #[error("destination buffer is too small")]
     DestinationBufferTooSmall,
     /// Error indicating that the data could not be decompressed.
-    #[error("failed to decompress the data")]
     DecompressingError,
     /// blosc internal error.
-    #[error("blosc internal error: {0}")]
     InternalError(i32),
 }
+impl std::fmt::Display for DecompressError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DecompressError::DestinationBufferTooSmall => {
+                f.write_str("destination buffer is too small")
+            }
+            DecompressError::DecompressingError => f.write_str("failed to decompress the data"),
+            DecompressError::InternalError(status) => write!(f, "blosc internal error: {status}"),
+        }
+    }
+}
+impl std::error::Error for DecompressError {}
 
 fn validate_compressed_slice_and_get_uncompressed_len(src: &[u8]) -> Option<usize> {
     let mut dst_len = 0;

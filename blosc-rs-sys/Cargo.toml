@@ -11,9 +11,13 @@ readme = "README.md"
 repository = "https://github.com/barakugav/blosc-rs"
 license = "Apache-2.0"
 keywords = ["blosc", "bindings", "compression"]
-categories = ["bindings", "compression"]
+categories = ["compression", "external-ffi-bindings"]
 
 [dependencies]
 
 [build-dependencies]
 bindgen = "0.72"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

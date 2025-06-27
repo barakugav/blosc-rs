@@ -17,15 +17,18 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
-        runner: [ubuntu-22.04, macos-latest]
+        runner: [ubuntu-22.04, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      checks: write
     steps:
       - name: Repo checkout
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-      # - name: Install C++ dependencies
-      #   if: runner.os == 'Linux'
-      #   run: sudo apt-get install libc++-dev
       - name: Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:

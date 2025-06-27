@@ -2,7 +2,7 @@
 name = "blosc-rs"
 version = "0.1.0"
 edition = "2021"
-# println!("cargo::...")
+# println!("cargo::..."), c-literals
 rust-version = "1.77.0"
 authors = ["Barak Ugav <barakugav@gmail.com>"]
 description = "Unsafe Rust bindings for blosc - a blocking, shuffling and lossless compression library"
@@ -10,11 +10,14 @@ license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/barakugav/blosc-rs"
 keywords = ["blosc", "bindings", "compression"]
-categories = ["bindings", "compression"]
+categories = ["compression", "external-ffi-bindings"]
 
 [dependencies]
-blosc-rs-sys = { path = "../blosc-rs-sys" }
-thiserror = "1"
+blosc-rs-sys = { path = "../blosc-rs-sys", version = "0.1.0" }
 
 [dev-dependencies]
 rand = "0.9"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

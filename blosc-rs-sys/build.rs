@@ -1,39 +1,27 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
     generate_bindings();
-    build_c_lib();
-    link_c_lib();
+
+    // Build and link
+    if std::env::var("DOCS_RS").is_err() {
+        build_c_lib();
+
+        let lib_name = if cfg!(target_os = "windows") {
+            "libblosc"
+        } else {
+            "blosc"
+        };
+        println!("cargo::rustc-link-lib=static={lib_name}");
+    }
 }
 
 fn generate_bindings() {
-    let c_lib = Path::new(&env!("CARGO_MANIFEST_DIR")).join("c");
     let builder = bindgen::Builder::default()
-        .clang_arg(format!("-I{}", c_lib.to_str().unwrap()))
         .use_core()
-        .header(c_lib.join("bindings.h").to_str().unwrap())
-        .allowlist_file(format!("{}/blosc/blosc.h", c_lib.to_str().unwrap()))
-        // .default_enum_style(bindgen::EnumVariation::Rust {
-        //     non_exhaustive: false,
-        // })
-        // .no_copy(".*")
-        // .manually_drop_union(".*")
-        // .opaque_type("EValueStorage")
-        // .opaque_type("TensorStorage")
-        // .opaque_type("TensorImpl")
-        // .opaque_type("Program")
-        // .opaque_type("TensorInfo")
-        // .opaque_type("MethodMeta")
-        // .opaque_type("Method")
-        // .opaque_type("BufferDataLoader")
-        // .opaque_type("FileDataLoader")
-        // .opaque_type("MmapDataLoader")
-        // .opaque_type("MemoryAllocator")
-        // .opaque_type("HierarchicalAllocator")
-        // .opaque_type("MemoryManager")
-        // .opaque_type("OptionalTensorStorage")
-        // .opaque_type("ETDumpGen")
+        .header("c/bindings.h")
+        .allowlist_file(".*/blosc.h")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));
     let bindings = builder.generate().expect("Failed to generate bindings");
 
@@ -83,19 +71,21 @@ fn build_c_lib() {
         .status()
         .expect("Failed to configure c-blosc build");
     Command::new("cmake")
-        .args(["--build", "."])
+        .args(["--build", ".", "--config", "Release"])
         .current_dir(&blosc_build_dir)
         .status()
         .expect("Failed to build c-blosc");
-}
 
-fn link_c_lib() {
-    let libs_dir = blosc_build_dir().join("blosc");
+    let libs_dir = if cfg!(target_os = "windows") {
+        blosc_build_dir.join("blosc").join("Release")
+    } else {
+        blosc_build_dir.join("blosc")
+    };
+
     println!(
         "cargo::rustc-link-search=native={}",
         libs_dir.to_str().unwrap()
     );
-    println!("cargo::rustc-link-lib=static=blosc");
 }
 
 fn blosc_dir() -> PathBuf {
