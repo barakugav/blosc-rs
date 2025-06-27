@@ -1,0 +1,290 @@
+use std::ffi::{CStr, CString};
+use std::mem::MaybeUninit;
+use std::num::NonZeroUsize;
+
+pub fn compress(
+    clevel: CLevel,
+    shuffle: Shuffle,
+    typesize: usize,
+    src: &[u8],
+    compressor: &CompressAlgo,
+    blocksize: Option<NonZeroUsize>,
+    numinternalthreads: u32,
+) -> Result<Vec<u8>, CompressError> {
+    let dst_max_len = src.len() + blosc_rs_sys::BLOSC_MAX_OVERHEAD as usize;
+    let mut dst = Vec::<MaybeUninit<u8>>::with_capacity(dst_max_len);
+    unsafe { dst.set_len(dst_max_len) };
+
+    let len = compress_into(
+        clevel,
+        shuffle,
+        typesize,
+        src,
+        dst.as_mut_slice(),
+        compressor,
+        blocksize,
+        numinternalthreads,
+    )?;
+    assert!(len <= dst_max_len);
+    unsafe { dst.set_len(len) };
+    // SAFETY: every element from 0 to len was initialized
+    let vec = unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(dst) };
+    Ok(vec)
+}
+
+pub fn compress_into(
+    clevel: CLevel,
+    shuffle: Shuffle,
+    typesize: usize,
+    src: &[u8],
+    dst: &mut [MaybeUninit<u8>],
+    compressor: &CompressAlgo,
+    blocksize: Option<NonZeroUsize>,
+    numinternalthreads: u32,
+) -> Result<usize, CompressError> {
+    let status = unsafe {
+        blosc_rs_sys::blosc_compress_ctx(
+            clevel as i32 as std::ffi::c_int,
+            shuffle as u32 as std::ffi::c_int,
+            typesize,
+            src.len(),
+            src.as_ptr() as *const std::ffi::c_void,
+            dst.as_mut_ptr() as *mut std::ffi::c_void,
+            dst.len(),
+            compressor.as_ref().as_ptr(),
+            blocksize.map(|b| b.get() as usize).unwrap_or(0),
+            numinternalthreads as std::ffi::c_int,
+        )
+    };
+    match status {
+        len if len > 0 => {
+            assert!(len as usize <= dst.len());
+            Ok(len as usize)
+        }
+        0 => Err(CompressError::DestinationBufferTooSmall),
+        _ => {
+            debug_assert!(status < 0);
+            Err(CompressError::InternalError(status))
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum CompressError {
+    #[error("destination buffer is too small")]
+    DestinationBufferTooSmall,
+    #[error("blosc internal error: {0}")]
+    InternalError(i32),
+}
+
+#[repr(i32)]
+pub enum CLevel {
+    L0 = 0,
+    L1 = 1,
+    L2 = 2,
+    L3 = 3,
+    L4 = 4,
+    L5 = 5,
+    L6 = 6,
+    L7 = 7,
+    L8 = 8,
+    L9 = 9,
+}
+impl TryFrom<i32> for CLevel {
+    type Error = ();
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(CLevel::L0),
+            1 => Ok(CLevel::L1),
+            2 => Ok(CLevel::L2),
+            3 => Ok(CLevel::L3),
+            4 => Ok(CLevel::L4),
+            5 => Ok(CLevel::L5),
+            6 => Ok(CLevel::L6),
+            7 => Ok(CLevel::L7),
+            8 => Ok(CLevel::L8),
+            9 => Ok(CLevel::L9),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Shuffle {
+    None = blosc_rs_sys::BLOSC_NOSHUFFLE,
+    Byte = blosc_rs_sys::BLOSC_SHUFFLE,
+    Bit = blosc_rs_sys::BLOSC_BITSHUFFLE,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+
+pub enum CompressAlgo {
+    Blosclz,
+    Lz4,
+    Lz4hc,
+    // Snappy,
+    Zlib,
+    Zstd,
+    Other(CString),
+}
+impl AsRef<CStr> for CompressAlgo {
+    fn as_ref(&self) -> &CStr {
+        match self {
+            CompressAlgo::Blosclz => CStr::from_bytes_with_nul(b"blosclz\0").unwrap(),
+            CompressAlgo::Lz4 => CStr::from_bytes_with_nul(b"lz4\0").unwrap(),
+            CompressAlgo::Lz4hc => CStr::from_bytes_with_nul(b"lz4hc\0").unwrap(),
+            // CompressAlgo::Snappy => CStr::from_bytes_with_nul(b"snappy\0").unwrap(),
+            CompressAlgo::Zlib => CStr::from_bytes_with_nul(b"zlib\0").unwrap(),
+            CompressAlgo::Zstd => CStr::from_bytes_with_nul(b"zstd\0").unwrap(),
+            CompressAlgo::Other(c) => c.as_ref(),
+        }
+    }
+}
+
+pub fn decompress(src: &[u8], numinternalthreads: u32) -> Result<Vec<u8>, DecompressError> {
+    let dst_len = validate_compressed_slice_and_get_uncompressed_len(src)
+        .ok_or(DecompressError::DecompressingError)?;
+    let mut dst = Vec::<MaybeUninit<u8>>::with_capacity(dst_len);
+    unsafe { dst.set_len(dst_len) };
+
+    let len = unsafe { decompress_into_unchecked(src, dst.as_mut_slice(), numinternalthreads)? };
+    assert!(len <= dst_len);
+    unsafe { dst.set_len(len) };
+    // SAFETY: every element from 0 to len was initialized
+    let vec = unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(dst) };
+    Ok(vec)
+}
+pub fn decompress_into(
+    src: &[u8],
+    dst: &mut [MaybeUninit<u8>],
+    numinternalthreads: u32,
+) -> Result<usize, DecompressError> {
+    let dst_len = validate_compressed_slice_and_get_uncompressed_len(src)
+        .ok_or(DecompressError::DecompressingError)?;
+    if dst.len() < dst_len {
+        return Err(DecompressError::DestinationBufferTooSmall);
+    }
+    let len = unsafe { decompress_into_unchecked(src, dst, numinternalthreads)? };
+    assert!(len <= dst_len);
+    Ok(len)
+}
+
+unsafe fn decompress_into_unchecked(
+    src: &[u8],
+    dst: &mut [MaybeUninit<u8>],
+    numinternalthreads: u32,
+) -> Result<usize, DecompressError> {
+    let status = unsafe {
+        blosc_rs_sys::blosc_decompress_ctx(
+            src.as_ptr() as *const std::ffi::c_void,
+            dst.as_mut_ptr() as *mut std::ffi::c_void,
+            dst.len(),
+            numinternalthreads as std::ffi::c_int,
+        )
+    };
+    match status {
+        len if len >= 0 => Ok(len as usize),
+        _ => Err(DecompressError::InternalError(status)),
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum DecompressError {
+    #[error("destination buffer is too small")]
+    DestinationBufferTooSmall,
+    #[error("failed to decompress the data")]
+    DecompressingError,
+    #[error("blosc internal error: {0}")]
+    InternalError(i32),
+}
+
+fn validate_compressed_slice_and_get_uncompressed_len(src: &[u8]) -> Option<usize> {
+    let mut dst_len = 0;
+    let status = unsafe {
+        blosc_rs_sys::blosc_cbuffer_validate(
+            src.as_ptr() as *const std::ffi::c_void,
+            src.len(),
+            &mut dst_len,
+        )
+    };
+    if status < 0 {
+        None
+    } else {
+        Some(dst_len)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    use crate::{CLevel, CompressAlgo, Shuffle};
+
+    #[test]
+    fn round_trip() {
+        let mut rand = StdRng::seed_from_u64(0xb1ba0c326dc4dbba);
+
+        for _ in 0..100 {
+            let src_len = {
+                let max_lens = [0x1, 0x10, 0x100, 0x1000, 0x10000, 0x100000];
+                let max_len = max_lens[rand.random_range(0..max_lens.len())];
+                rand.random_range(0..=max_len)
+            };
+            let src = (0..rand.random_range(0..=src_len))
+                .map(|_| rand.random_range(0..=255) as u8)
+                .collect::<Vec<u8>>();
+            let clevel: CLevel = rand.random_range(0..=9).try_into().unwrap();
+            let shuffle = {
+                let shuffles = [Shuffle::None, Shuffle::Byte, Shuffle::Bit];
+                shuffles[rand.random_range(0..shuffles.len())]
+            };
+            let typesize = (1..=8)
+                .map(|i| rand.random_range(1..=(1 << (8 - i))))
+                .find(|&ts| src.len() % ts == 0)
+                .unwrap();
+            let compressor = {
+                let compressors = [
+                    CompressAlgo::Blosclz,
+                    CompressAlgo::Lz4,
+                    CompressAlgo::Lz4hc,
+                    // CompressAlgo::Snappy,
+                    CompressAlgo::Zlib,
+                    CompressAlgo::Zstd,
+                ];
+                compressors[rand.random_range(0..compressors.len())].clone()
+            };
+            let blocksize = {
+                let blocksizes = [
+                    Option::<NonZeroUsize>::None,
+                    Some(1.try_into().unwrap()),
+                    Some(64.try_into().unwrap()),
+                    Some(4096.try_into().unwrap()),
+                    Some(262144.try_into().unwrap()),
+                    Some(rand.random_range(1..4096).try_into().unwrap()),
+                ];
+                blocksizes[rand.random_range(0..blocksizes.len())]
+            };
+            let numinternalthreads = rand.random_range(1..=16);
+
+            let compressed = crate::compress(
+                clevel,
+                shuffle,
+                typesize,
+                &src,
+                &compressor,
+                blocksize,
+                numinternalthreads,
+            )
+            .unwrap();
+
+            let decompressed = crate::decompress(&compressed, numinternalthreads).unwrap();
+
+            assert_eq!(src, decompressed);
+        }
+    }
+}

@@ -1,0 +1,10 @@
+[package]
+name = "blosc-rs-sys"
+version = "0.1.0"
+edition = "2021"
+links = "blosc"
+
+[dependencies]
+
+[build-dependencies]
+bindgen = "0.72"
