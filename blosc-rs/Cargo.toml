@@ -13,7 +13,7 @@ keywords = ["blosc", "bindings", "compression"]
 categories = ["compression", "external-ffi-bindings"]
 
 [dependencies]
-blosc-rs-sys = { path = "../blosc-rs-sys", version = "0.1.0" }
+blosc-rs-sys = { path = "../blosc-rs-sys", version = "0.1.1" }
 
 [dev-dependencies]
 rand = "0.9"
