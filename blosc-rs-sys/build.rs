@@ -32,6 +32,16 @@ fn generate_bindings() {
 }
 
 fn build_c_lib() {
+    // Assert git and cmake are installed
+    Command::new("git")
+        .arg("--version")
+        .status()
+        .expect("git not found");
+    Command::new("cmake")
+        .arg("--version")
+        .status()
+        .expect("cmake not found");
+
     let blosc_dir = blosc_dir();
     if !blosc_dir.exists() {
         std::fs::create_dir_all(&blosc_dir).expect("Failed to create c-blosc directory");
