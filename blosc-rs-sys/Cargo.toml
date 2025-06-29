@@ -17,6 +17,7 @@ categories = ["compression", "external-ffi-bindings"]
 
 [build-dependencies]
 bindgen = "0.72"
+cmake = "0.1"
 
 [package.metadata.docs.rs]
 all-features = true
