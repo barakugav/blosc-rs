@@ -2,7 +2,7 @@
 Rust bindings for blosc - a blocking, shuffling and lossless compression library.
 
 Provide a safe interface to the [blosc](https://github.com/Blosc/c-blosc) library.
-The crate has zero dependencies.
+The crate has zero runtime dependencies.
 
 ### Getting Started
 
