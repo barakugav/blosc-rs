@@ -20,7 +20,7 @@
 //!
 //! In the following example we compress a vector of integers and then decompress it back:
 //! ```rust
-//! use blosc_rs::{CLevel, CompressAlgo, Shuffle, compress, decompress};
+//! use blosc_rs::{CLevel, CompressAlgo, Shuffle, compress, Decoder};
 //!
 //! let data: [i32; 7] = [1, 2, 3, 4, 5, 6, 7];
 //!
@@ -42,7 +42,10 @@
 //! )
 //! .unwrap();
 //!
-//! let decompressed = decompress(&compressed, numinternalthreads).unwrap();
+//! let decompressed = Decoder::new(&compressed)
+//!     .expect("invalid buffer")
+//!     .decompress(numinternalthreads)
+//!     .expect("failed to decompress");
 //! // SAFETY: we know the data is of type i32
 //! let decompressed: &[i32] = unsafe {
 //!     std::slice::from_raw_parts(
@@ -54,7 +57,9 @@
 //! assert_eq!(data, *decompressed);
 //! ```
 
+use std::borrow::Cow;
 use std::ffi::{CStr, CString};
+use std::io::Read;
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 
@@ -273,75 +278,6 @@ impl AsRef<CStr> for CompressAlgo {
     }
 }
 
-/// Decompress a block of compressed data in `src` and returns the decompressed data.
-///
-/// # Arguments
-///
-/// * `src`: The compressed data to decompress.
-/// * `numinternalthreads`: The number of threads to use internally.
-///
-/// # Returns
-///
-/// A `Result` containing the decompressed data as a `Vec<u8>`, or a `DecompressError` if an error occurs.
-pub fn decompress(src: &[u8], numinternalthreads: u32) -> Result<Vec<u8>, DecompressError> {
-    let dst_len = validate_compressed_slice_and_get_uncompressed_len(src)
-        .ok_or(DecompressError::DecompressingError)?;
-    let mut dst = Vec::<MaybeUninit<u8>>::with_capacity(dst_len);
-    unsafe { dst.set_len(dst_len) };
-
-    let len = unsafe { decompress_into_unchecked(src, dst.as_mut_slice(), numinternalthreads)? };
-    assert!(len <= dst_len);
-    unsafe { dst.set_len(len) };
-    // SAFETY: every element from 0 to len was initialized
-    let vec = unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(dst) };
-    Ok(vec)
-}
-
-/// Decompress a block of compressed data in `src` into the `dst` buffer.
-///
-/// # Arguments
-///
-/// * `src`: The compressed data to decompress.
-/// * `dst`: The destination buffer where the decompressed data will be written.
-/// * `numinternalthreads`: The number of threads to use internally.
-///
-/// # Returns
-///
-/// A `Result` containing the number of bytes written to the `dst` buffer, or a `DecompressError` if an error occurs.
-pub fn decompress_into(
-    src: &[u8],
-    dst: &mut [MaybeUninit<u8>],
-    numinternalthreads: u32,
-) -> Result<usize, DecompressError> {
-    let dst_len = validate_compressed_slice_and_get_uncompressed_len(src)
-        .ok_or(DecompressError::DecompressingError)?;
-    if dst.len() < dst_len {
-        return Err(DecompressError::DestinationBufferTooSmall);
-    }
-    let len = unsafe { decompress_into_unchecked(src, dst, numinternalthreads)? };
-    assert!(len <= dst_len);
-    Ok(len)
-}
-
-unsafe fn decompress_into_unchecked(
-    src: &[u8],
-    dst: &mut [MaybeUninit<u8>],
-    numinternalthreads: u32,
-) -> Result<usize, DecompressError> {
-    let status = unsafe {
-        blosc_sys::blosc_decompress_ctx(
-            src.as_ptr() as *const std::ffi::c_void,
-            dst.as_mut_ptr() as *mut std::ffi::c_void,
-            dst.len(),
-            numinternalthreads as std::ffi::c_int,
-        )
-    };
-    match status {
-        len if len >= 0 => Ok(len as usize),
-        _ => Err(DecompressError::InternalError(status)),
-    }
-}
-
 /// Error that can occur during decompression.
 #[derive(Debug)]
 pub enum DecompressError {
@@ -351,6 +287,13 @@ pub enum DecompressError {
     DecompressingError,
     /// blosc internal error.
     InternalError(i32),
+    /// An I/O error occurred while reading the compressed data.
+    IoError(std::io::Error),
+}
+impl From<std::io::Error> for DecompressError {
+    fn from(err: std::io::Error) -> Self {
+        DecompressError::IoError(err)
+    }
 }
 impl std::fmt::Display for DecompressError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -360,24 +303,229 @@ impl std::fmt::Display for DecompressError {
             }
             DecompressError::DecompressingError => f.write_str("failed to decompress the data"),
             DecompressError::InternalError(status) => write!(f, "blosc internal error: {status}"),
+            DecompressError::IoError(err) => write!(f, "I/O error: {}", err),
         }
     }
 }
 impl std::error::Error for DecompressError {}
 
-fn validate_compressed_slice_and_get_uncompressed_len(src: &[u8]) -> Option<usize> {
-    let mut dst_len = 0;
-    let status = unsafe {
-        blosc_sys::blosc_cbuffer_validate(
-            src.as_ptr() as *const std::ffi::c_void,
-            src.len(),
-            &mut dst_len,
-        )
-    };
-    if status < 0 {
-        None
-    } else {
-        Some(dst_len)
+/// A decoder for Blosc compressed data.
+///
+/// The compressed data is held in memory in the decoder, and decoding is done either by decompressing the entire
+/// buffer, or by accessing individual items or ranges of items. In both cases, the decoder remains unchanged and only
+/// the compressed data is held by it.
+pub struct Decoder<'a> {
+    src: Cow<'a, [u8]>,
+    typesize: usize,
+    dst_len: usize,
+}
+impl<'a> Decoder<'a> {
+    /// Create a new decoder from a reader that contains Blosc compressed data.
+    ///
+    /// First, a header of a fixed size is read from the reader, which contains metadata about the length of the
+    /// compressed data. Then, the rest of the compressed data is read into a new buffer. The created decoder holds
+    /// the entire compressed data in memory, and the reader is not used after this point.
+    pub fn from_reader(reader: &mut impl Read) -> Result<Self, DecompressError> {
+        // Read the header
+        let mut header =
+            [const { MaybeUninit::<u8>::uninit() }; blosc_sys::BLOSC_MIN_HEADER_LENGTH as usize];
+        reader.read_exact(unsafe {
+            std::mem::transmute::<&mut [MaybeUninit<u8>], &mut [u8]>(&mut header)
+        })?;
+
+        // Get the number of compressed bytes
+        let mut nbytes = MaybeUninit::uninit();
+        let mut cbytes = MaybeUninit::uninit();
+        let mut blocksize = MaybeUninit::uninit();
+        unsafe {
+            blosc_sys::blosc_cbuffer_sizes(
+                header.as_ptr() as *const std::ffi::c_void,
+                nbytes.as_mut_ptr(),
+                cbytes.as_mut_ptr(),
+                blocksize.as_mut_ptr(),
+            )
+        };
+        // let nbytes = unsafe { nbytes.assume_init() };
+        // let blocksize = unsafe { blocksize.assume_init() };
+        let cbytes = unsafe { cbytes.assume_init() };
+        if cbytes == 0 {
+            return Err(DecompressError::DecompressingError);
+        }
+
+        // Create a new buffer with all of the compressed data
+        let mut src = Vec::<MaybeUninit<u8>>::with_capacity(cbytes);
+        unsafe { src.set_len(cbytes) };
+        // Copy the header to the new buffer
+        src[..blosc_sys::BLOSC_MIN_HEADER_LENGTH as usize]
+            .copy_from_slice(&header[..blosc_sys::BLOSC_MIN_HEADER_LENGTH as usize]);
+        // Read the rest of the compressed data
+        reader.read_exact(unsafe {
+            std::mem::transmute::<&mut [MaybeUninit<u8>], &mut [u8]>(
+                &mut src[blosc_sys::BLOSC_MIN_HEADER_LENGTH as usize..],
+            )
+        })?;
+        let src = unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(src) };
+
+        Self::new(src)
+    }
+
+    /// Create a new decoder from a slice of Blosc compressed data.
+    ///
+    /// No decompression is performed at this point. Decompression is done on demand either by decompressing the
+    /// entire buffer or by accessing individual items or ranges of items.
+    pub fn new(src: impl Into<Cow<'a, [u8]>>) -> Result<Self, DecompressError> {
+        let src: Cow<'a, [u8]> = src.into();
+
+        // Validate
+        let mut dst_len = 0;
+        let status = unsafe {
+            blosc_sys::blosc_cbuffer_validate(
+                src.as_ptr() as *const std::ffi::c_void,
+                src.len(),
+                &mut dst_len,
+            )
+        };
+        if status < 0 {
+            return Err(DecompressError::DecompressingError);
+        }
+
+        let mut typesize = MaybeUninit::<usize>::uninit();
+        let mut flags = MaybeUninit::<std::ffi::c_int>::uninit();
+        unsafe {
+            blosc_sys::blosc_cbuffer_metainfo(
+                src.as_ptr() as *const std::ffi::c_void,
+                typesize.as_mut_ptr(),
+                flags.as_mut_ptr(),
+            )
+        };
+        let typesize = unsafe { typesize.assume_init() };
+
+        Ok(Self {
+            src,
+            typesize,
+            dst_len,
+        })
+    }
+
+    /// Decompress the entire buffer and return the decompressed data as a `Vec<u8>`.
+    ///
+    /// # Arguments
+    ///
+    /// * `numinternalthreads`: The number of threads to use internally.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the decompressed data as a `Vec<u8>`, or a `DecompressError` if an error occurs.
+    pub fn decompress(&self, numinternalthreads: u32) -> Result<Vec<u8>, DecompressError> {
+        let mut dst = Vec::<MaybeUninit<u8>>::with_capacity(self.dst_len);
+        unsafe { dst.set_len(self.dst_len) };
+
+        let len =
+            unsafe { self.decompress_into_unchecked(dst.as_mut_slice(), numinternalthreads)? };
+        assert!(len <= self.dst_len);
+        unsafe { dst.set_len(len) };
+        // SAFETY: every element from 0 to len was initialized
+        let vec = unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(dst) };
+        Ok(vec)
+    }
+
+    /// Decompress the entire buffer and write the decompressed data into the provided destination buffer.
+    ///
+    /// # Arguments
+    ///
+    /// * `dst`: The destination buffer where the decompressed data will be written.
+    /// * `numinternalthreads`: The number of threads to use internally.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the number of bytes written to the `dst` buffer, or a `DecompressError` if an error occurs.
+    pub fn decompress_into(
+        &self,
+        dst: &mut [MaybeUninit<u8>],
+        numinternalthreads: u32,
+    ) -> Result<usize, DecompressError> {
+        if dst.len() < self.dst_len {
+            return Err(DecompressError::DestinationBufferTooSmall);
+        }
+        let len = unsafe { self.decompress_into_unchecked(dst, numinternalthreads)? };
+        assert!(len <= self.dst_len);
+        Ok(len)
+    }
+
+    unsafe fn decompress_into_unchecked(
+        &self,
+        dst: &mut [MaybeUninit<u8>],
+        numinternalthreads: u32,
+    ) -> Result<usize, DecompressError> {
+        let status = unsafe {
+            blosc_sys::blosc_decompress_ctx(
+                self.src.as_ptr() as *const std::ffi::c_void,
+                dst.as_mut_ptr() as *mut std::ffi::c_void,
+                dst.len(),
+                numinternalthreads as std::ffi::c_int,
+            )
+        };
+        match status {
+            len if len >= 0 => Ok(len as usize),
+            _ => Err(DecompressError::InternalError(status)),
+        }
+    }
+
+    /// Get the inner compressed data buffer.
+    pub fn into_buf(self) -> Cow<'a, [u8]> {
+        self.src
+    }
+
+    /// Get an element at the specified index.
+    pub fn item(&self, idx: usize) -> Result<Vec<u8>, DecompressError> {
+        self.items(idx..idx + 1)
+    }
+
+    /// Get an element at the specified index and copy it into the provided destination buffer.
+    pub fn item_into(
+        &self,
+        idx: usize,
+        dst: &mut [MaybeUninit<u8>],
+    ) -> Result<usize, DecompressError> {
+        self.items_into(idx..idx + 1, dst)
+    }
+
+    /// Get a range of elements specified by the index range.
+    pub fn items(&self, idx: std::ops::Range<usize>) -> Result<Vec<u8>, DecompressError> {
+        let mut dst = vec![MaybeUninit::<u8>::uninit(); self.typesize * idx.len()];
+        self.items_into(idx, &mut dst)?;
+        // SAFETY: every element in dst is initialized
+        Ok(unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(dst) })
+    }
+
+    /// Get a range of elements specified by the index range and copy them into the provided destination buffer.
+    pub fn items_into(
+        &self,
+        idx: std::ops::Range<usize>,
+        dst: &mut [MaybeUninit<u8>],
+    ) -> Result<usize, DecompressError> {
+        let required_len = self.typesize * idx.len();
+        if dst.len() < required_len {
+            return Err(DecompressError::DestinationBufferTooSmall);
+        }
+        let status = unsafe {
+            blosc_sys::blosc_getitem(
+                self.src.as_ptr() as *const std::ffi::c_void,
+                idx.start as std::ffi::c_int,
+                idx.len() as std::ffi::c_int,
+                dst.as_mut_ptr() as *mut std::ffi::c_void,
+            )
+        };
+        let dst_len = if status < 0 {
+            return Err(DecompressError::DecompressingError);
+        } else {
+            status as usize
+        };
+        if dst_len != required_len {
+            // Unexpected
+            return Err(DecompressError::DecompressingError);
+        }
+        Ok(dst_len)
     }
 }
 
@@ -447,8 +595,23 @@ mod tests {
             )
             .unwrap();
 
-            let decompressed = crate::decompress(&compressed, numinternalthreads).unwrap();
+            let decoder = crate::Decoder::new(&compressed).unwrap();
+            let items_num = src.len() / typesize;
+            if items_num > 0 {
+                for _ in 0..10 {
+                    let idx = rand.random_range(0..items_num);
+                    let item = decoder.item(idx).unwrap();
+                    assert_eq!(item, src[idx * typesize..(idx + 1) * typesize]);
+                }
+                for _ in 0..10 {
+                    let start = rand.random_range(0..items_num);
+                    let end = rand.random_range(start..items_num);
+                    let items = decoder.items(start..end).unwrap();
+                    assert_eq!(items, src[start * typesize..end * typesize]);
+                }
+            }
 
+            let decompressed = decoder.decompress(numinternalthreads).unwrap();
             assert_eq!(src, decompressed);
         }
     }
