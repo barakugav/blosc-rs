@@ -58,8 +58,11 @@ jobs:
           check-args: --all-features
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Test blosc-rs-sys
-        run: cargo test --all-features
+      - name: Test blosc-rs-sys dev
+        run: cargo test --all-features --profile dev
+        working-directory: blosc-rs-sys
+      - name: Test blosc-rs-sys release
+        run: cargo test --all-features --profile release
         working-directory: blosc-rs-sys
       - name: Test blosc-rs
         run: cargo test --all-features
