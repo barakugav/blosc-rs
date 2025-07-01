@@ -1,6 +1,6 @@
 [package]
 name = "blosc-rs-sys"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 # println!("cargo::...")
 rust-version = "1.77.0"
@@ -17,6 +17,7 @@ categories = ["compression", "external-ffi-bindings"]
 
 [build-dependencies]
 bindgen = "0.72"
+cmake = "0.1"
 
 [package.metadata.docs.rs]
 all-features = true

@@ -6,13 +6,7 @@ fn main() {
 
     // Build and link
     if std::env::var("DOCS_RS").is_err() {
-        build_c_lib();
-
-        let lib_name = if cfg!(target_os = "windows") {
-            "libblosc"
-        } else {
-            "blosc"
-        };
+        let lib_name = build_c_lib();
         println!("cargo::rustc-link-lib=static={lib_name}");
     }
 }
@@ -31,19 +25,15 @@ fn generate_bindings() {
         .expect("Couldn't write bindings!");
 }
 
-fn build_c_lib() {
-    // Assert git and cmake are installed
-    Command::new("git")
-        .arg("--version")
-        .status()
-        .expect("git not found");
-    Command::new("cmake")
-        .arg("--version")
-        .status()
-        .expect("cmake not found");
+fn build_c_lib() -> String {
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
 
-    let blosc_dir = blosc_dir();
+    let blosc_dir = out_dir.join("c-blosc");
     if !blosc_dir.exists() {
+        Command::new("git")
+            .arg("--version")
+            .status()
+            .expect("git not found");
         std::fs::create_dir_all(&blosc_dir).expect("Failed to create c-blosc directory");
         Command::new("git")
             .args([
@@ -63,44 +53,27 @@ fn build_c_lib() {
             .expect("Failed to clone c-blosc repository");
     }
 
-    let blosc_build_dir = blosc_build_dir();
-    std::fs::create_dir_all(&blosc_build_dir).expect("Failed to create c-blosc build directory");
-    Command::new("cmake")
-        .args([
-            "-S",
-            ".",
-            "-B",
-            blosc_build_dir.to_str().unwrap(),
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DBUILD_STATIC=ON",
-            "-DBUILD_SHARED=OFF",
-            "-DBUILD_TESTS=OFF",
-            "-DBUILD_BENCHMARKS=OFF",
-        ])
-        .current_dir(&blosc_dir)
-        .status()
-        .expect("Failed to configure c-blosc build");
-    Command::new("cmake")
-        .args(["--build", ".", "--config", "Release"])
-        .current_dir(&blosc_build_dir)
-        .status()
-        .expect("Failed to build c-blosc");
+    let mut build = cmake::Config::new(&blosc_dir);
+    build
+        .define("BUILD_STATIC", "ON")
+        .define("BUILD_SHARED", "OFF")
+        .define("BUILD_TESTS", "OFF")
+        .define("BUILD_BENCHMARKS", "OFF")
+        .out_dir(out_dir.join("c-blosc-build"));
+    let profile = build.get_profile().to_string();
+    let blosc_build_dir = build.build();
+    let blosc_build_dir = blosc_build_dir.join("build");
 
-    let libs_dir = if cfg!(target_os = "windows") {
-        blosc_build_dir.join("blosc").join("Release")
+    let target = std::env::var("TARGET").unwrap();
+    let (lib_dir, libname) = if target.contains("windows") && target.contains("msvc") {
+        (blosc_build_dir.join("blosc").join(profile), "libblosc")
     } else {
-        blosc_build_dir.join("blosc")
+        (blosc_build_dir.join("blosc"), "blosc")
     };
 
     println!(
         "cargo::rustc-link-search=native={}",
-        libs_dir.to_str().unwrap()
+        lib_dir.to_str().unwrap()
     );
-}
-
-fn blosc_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("c-blosc")
-}
-fn blosc_build_dir() -> PathBuf {
-    blosc_dir().join("build")
+    libname.to_string()
 }

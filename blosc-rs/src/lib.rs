@@ -5,7 +5,7 @@
 //! Rust bindings for blosc - a blocking, shuffling and lossless compression library.
 //!
 //! Provide a safe interface to the [blosc](https://github.com/Blosc/c-blosc) library.
-//! The crate has zero dependencies.
+//! The crate has zero runtime dependencies.
 //!
 //! # Getting Started
 //!
@@ -236,7 +236,7 @@ impl TryFrom<i32> for CLevel {
 }
 
 /// Represents the shuffle filters used by Blosc.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum Shuffle {
     /// no shuffle
@@ -248,7 +248,7 @@ pub enum Shuffle {
 }
 
 /// Represents the compression algorithms supported by Blosc.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[allow(missing_docs)]
 pub enum CompressAlgo {
     Blosclz,
