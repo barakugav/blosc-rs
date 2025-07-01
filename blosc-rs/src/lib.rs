@@ -60,7 +60,7 @@ use std::num::NonZeroUsize;
 
 /// The version of the underlying C-blosc library used by this crate.
 pub const BLOSC_C_VERSION: &str = {
-    let version = match CStr::from_bytes_until_nul(blosc_rs_sys::BLOSC_VERSION_STRING) {
+    let version = match CStr::from_bytes_until_nul(blosc_sys::BLOSC_VERSION_STRING) {
         Ok(v) => v,
         Err(_) => unreachable!(),
     };
@@ -101,7 +101,7 @@ pub fn compress(
     blocksize: Option<NonZeroUsize>,
     numinternalthreads: u32,
 ) -> Result<Vec<u8>, CompressError> {
-    let dst_max_len = src.len() + blosc_rs_sys::BLOSC_MAX_OVERHEAD as usize;
+    let dst_max_len = src.len() + blosc_sys::BLOSC_MAX_OVERHEAD as usize;
     let mut dst = Vec::<MaybeUninit<u8>>::with_capacity(dst_max_len);
     unsafe { dst.set_len(dst_max_len) };
 
@@ -152,7 +152,7 @@ pub fn compress_into(
     numinternalthreads: u32,
 ) -> Result<usize, CompressError> {
     let status = unsafe {
-        blosc_rs_sys::blosc_compress_ctx(
+        blosc_sys::blosc_compress_ctx(
             clevel as i32 as std::ffi::c_int,
             shuffle as u32 as std::ffi::c_int,
             typesize,
@@ -240,11 +240,11 @@ impl TryFrom<i32> for CLevel {
 #[repr(u32)]
 pub enum Shuffle {
     /// no shuffle
-    None = blosc_rs_sys::BLOSC_NOSHUFFLE,
+    None = blosc_sys::BLOSC_NOSHUFFLE,
     /// byte-wise shuffle
-    Byte = blosc_rs_sys::BLOSC_SHUFFLE,
+    Byte = blosc_sys::BLOSC_SHUFFLE,
     /// bit-wise shuffle
-    Bit = blosc_rs_sys::BLOSC_BITSHUFFLE,
+    Bit = blosc_sys::BLOSC_BITSHUFFLE,
 }
 
 /// Represents the compression algorithms supported by Blosc.
@@ -329,7 +329,7 @@ unsafe fn decompress_into_unchecked(
     numinternalthreads: u32,
 ) -> Result<usize, DecompressError> {
     let status = unsafe {
-        blosc_rs_sys::blosc_decompress_ctx(
+        blosc_sys::blosc_decompress_ctx(
             src.as_ptr() as *const std::ffi::c_void,
             dst.as_mut_ptr() as *mut std::ffi::c_void,
             dst.len(),
@@ -368,7 +368,7 @@ impl std::error::Error for DecompressError {}
 fn validate_compressed_slice_and_get_uncompressed_len(src: &[u8]) -> Option<usize> {
     let mut dst_len = 0;
     let status = unsafe {
-        blosc_rs_sys::blosc_cbuffer_validate(
+        blosc_sys::blosc_cbuffer_validate(
             src.as_ptr() as *const std::ffi::c_void,
             src.len(),
             &mut dst_len,
