@@ -49,13 +49,5 @@ assert_eq!(&data_bytes[4..20], decoder.items(1..5).expect("failed to get items 1
 
 // Decompress the entire buffer
 let decompressed = decoder.decompress(numinternalthreads).expect("failed to decompress");
-// SAFETY: we know the data is of type i32
-let decompressed: &[i32] = unsafe {
-    std::slice::from_raw_parts(
-        decompressed.as_ptr() as *const i32,
-        decompressed.len() / std::mem::size_of::<i32>(),
-    )
-};
-
-assert_eq!(data, *decompressed);
+assert_eq!(data_bytes, decompressed);
 ```
