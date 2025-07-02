@@ -40,10 +40,10 @@
 //!
 //! let decoder = Decoder::new(&compressed).expect("invalid buffer");
 //!
-//! // Access some items using random random access, without decompressing the entire buffer
+//! // Read some items using random access, without decompressing the entire buffer
 //! assert_eq!(&data_bytes[0..4], decoder.item(0).expect("failed to get the 0-th item"));
 //! assert_eq!(&data_bytes[12..16], decoder.item(3).expect("failed to get the 3-th item"));
-//! assert_eq!(&data_bytes[20..24], decoder.item(5).expect("failed to get the 5-th item"));
+//! assert_eq!(&data_bytes[4..20], decoder.items(1..5).expect("failed to get items 1 to 4"));
 //!
 //! // Decompress the entire buffer
 //! let decompressed = decoder.decompress(numinternalthreads).expect("failed to decompress");
@@ -78,10 +78,11 @@ pub const BLOSC_C_VERSION: &str = {
 
 /// Encoder for Blosc compression.
 ///
-/// This struct is not the usual stream-like encoder, but rather a configuration builder for the Blosc compression.
+/// This struct is not the usual stream-like encoder that commonly exists in Rust compression libraries, but rather a
+/// configuration builder for the Blosc compression.
 /// This is because blosc is not a streaming compression library, and it operate on the entire data buffer at once.
 pub struct Encoder {
-    clevel: CLevel,
+    level: Level,
     shuffle: Shuffle,
     typesize: usize,
     compressor: CompressAlgo,
@@ -90,14 +91,14 @@ pub struct Encoder {
 }
 impl Default for Encoder {
     fn default() -> Self {
-        Self::new(CLevel::L9)
+        Self::new(Level::new(9).unwrap())
     }
 }
 impl Encoder {
     /// Create a new encoder with the specified compression level.
-    pub fn new(level: CLevel) -> Self {
+    pub fn new(level: Level) -> Self {
         Self {
-            clevel: level,
+            level,
             shuffle: Shuffle::Byte,
             typesize: 1,
             compressor: CompressAlgo::Blosclz,
@@ -107,8 +108,8 @@ impl Encoder {
     }
 
     /// Sets the compression level for the encoder.
-    pub fn level(&mut self, level: CLevel) -> &mut Self {
-        self.clevel = level;
+    pub fn level(&mut self, level: Level) -> &mut Self {
+        self.level = level;
         self
     }
 
@@ -123,8 +124,11 @@ impl Encoder {
     /// Sets the typesize for the encoder.
     ///
     /// This is the number of bytes for the atomic type in the binary `src` buffer.
-    /// For implementation reasons, only a `typesize` in the range 1 < `typesize` < 256 will allow the
+    /// For implementation reasons, only a `typesize` in the range `1 < typesize < 256` will allow the
     /// shuffle filter to work. When `typesize` is not in this range, shuffle will be silently disabled.
+    ///
+    /// The `typesize` is also used to split the input bytes into logical items, and a `Decoder` can access these items
+    /// by their index without decompressing the entire buffer. See [`Decoder::item`] and [`Decoder::items`].
     ///
     /// By default, the typesize is set to 1.
     pub fn typesize(&mut self, typesize: usize) -> &mut Self {
@@ -184,7 +188,7 @@ impl Encoder {
     ) -> Result<usize, CompressError> {
         let status = unsafe {
             blosc_sys::blosc_compress_ctx(
-                self.clevel as i32 as std::ffi::c_int,
+                self.level.0 as i32 as std::ffi::c_int,
                 self.shuffle as u32 as std::ffi::c_int,
                 self.typesize,
                 src.len(),
@@ -230,41 +234,35 @@ impl std::fmt::Display for CompressError {
 }
 impl std::error::Error for CompressError {}
 
-/// Represents the compression levels used by Blosc.
+/// A compression level used by Blosc.
 ///
 /// The levels range from 0 to 9, where 0 is no compression and 9 is maximum compression.
-#[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(i32)]
-pub enum CLevel {
-    L0 = 0,
-    L1 = 1,
-    L2 = 2,
-    L3 = 3,
-    L4 = 4,
-    L5 = 5,
-    L6 = 6,
-    L7 = 7,
-    L8 = 8,
-    L9 = 9,
+pub struct Level(u32);
+impl Level {
+    /// Creates a new compression level.
+    ///
+    /// # Arguments
+    ///
+    /// * `level`: The compression level, must be in the range 0 to 9.
+    ///
+    /// # Returns
+    ///
+    /// The created `Level` if the input is valid, otherwise `None`.
+    pub fn new(level: u32) -> Option<Self> {
+        (0..=9).contains(&level).then_some(Self(level))
+    }
 }
-impl TryFrom<i32> for CLevel {
+impl TryFrom<u32> for Level {
     type Error = ();
 
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(CLevel::L0),
-            1 => Ok(CLevel::L1),
-            2 => Ok(CLevel::L2),
-            3 => Ok(CLevel::L3),
-            4 => Ok(CLevel::L4),
-            5 => Ok(CLevel::L5),
-            6 => Ok(CLevel::L6),
-            7 => Ok(CLevel::L7),
-            8 => Ok(CLevel::L8),
-            9 => Ok(CLevel::L9),
-            _ => Err(()),
-        }
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Self::new(value).ok_or(())
+    }
+}
+impl From<Level> for u32 {
+    fn from(level: Level) -> Self {
+        level.0
     }
 }
 
@@ -308,9 +306,9 @@ impl AsRef<CStr> for CompressAlgo {
 
 /// A decoder for Blosc compressed data.
 ///
-/// This struct is not the usual stream-like decoder, but rather an array-like object that allows random access to
-/// elements in the compressed data or decoding the entire buffer. This is because blosc is not a streaming library,
-/// and it operates on the entire data buffer at once.
+/// This struct is not the usual stream-like decoder that commonly exists in Rust compression libraries, but rather
+/// an array-like object that allows random access to elements in the compressed data or decoding the entire buffer.
+/// This is because blosc is not a streaming library, and it operates on the entire data buffer at once.
 ///
 /// The compressed data is held in memory within the decoder, and decoding is done either by decompressing the entire
 /// buffer, or by accessing individual items or ranges of items. In both cases, the decoder remains unchanged and only
@@ -328,8 +326,7 @@ impl<'a> Decoder<'a> {
     /// decoder, and the reader is not used after this point.
     pub fn from_reader(reader: &mut impl Read) -> Result<Self, DecompressError> {
         // Read the header
-        let mut header =
-            [const { MaybeUninit::<u8>::uninit() }; blosc_sys::BLOSC_MIN_HEADER_LENGTH as usize];
+        let mut header = [MaybeUninit::<u8>::uninit(); blosc_sys::BLOSC_MIN_HEADER_LENGTH as usize];
         reader.read_exact(unsafe {
             std::mem::transmute::<&mut [MaybeUninit<u8>], &mut [u8]>(&mut header)
         })?;
@@ -466,17 +463,26 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    /// Get a reference to the inner compressed data buffer.
+    pub fn as_buf(&self) -> &[u8] {
+        &self.src
+    }
+
     /// Get the inner compressed data buffer.
     pub fn into_buf(self) -> Cow<'a, [u8]> {
         self.src
     }
 
     /// Get an element at the specified index.
+    ///
+    /// Each item is `typesize` (as provided during encoding) bytes long, and the index is zero-based.
     pub fn item(&self, idx: usize) -> Result<Vec<u8>, DecompressError> {
         self.items(idx..idx + 1)
     }
 
     /// Get an element at the specified index and copy it into the provided destination buffer.
+    ///
+    /// Each item is `typesize` (as provided during encoding) bytes long, and the index is zero-based.
     pub fn item_into(
         &self,
         idx: usize,
@@ -486,6 +492,8 @@ impl<'a> Decoder<'a> {
     }
 
     /// Get a range of elements specified by the index range.
+    ///
+    /// Each item is `typesize` (as provided during encoding) bytes long, and the index is zero-based.
     pub fn items(&self, idx: std::ops::Range<usize>) -> Result<Vec<u8>, DecompressError> {
         let mut dst = vec![MaybeUninit::<u8>::uninit(); self.typesize * idx.len()];
         self.items_into(idx, &mut dst)?;
@@ -494,6 +502,8 @@ impl<'a> Decoder<'a> {
     }
 
     /// Get a range of elements specified by the index range and copy them into the provided destination buffer.
+    ///
+    /// Each item is `typesize` (as provided during encoding) bytes long, and the index is zero-based.
     pub fn items_into(
         &self,
         idx: std::ops::Range<usize>,
@@ -549,7 +559,7 @@ impl std::fmt::Display for DecompressError {
             }
             DecompressError::DecompressingError => f.write_str("failed to decompress the data"),
             DecompressError::InternalError(status) => write!(f, "blosc internal error: {status}"),
-            DecompressError::IoError(err) => write!(f, "I/O error: {}", err),
+            DecompressError::IoError(err) => write!(f, "I/O error: {err}"),
         }
     }
 }
@@ -562,7 +572,7 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
 
-    use crate::{CLevel, CompressAlgo, Shuffle};
+    use crate::{CompressAlgo, Level, Shuffle};
 
     #[test]
     fn round_trip() {
@@ -577,7 +587,7 @@ mod tests {
             let src = (0..rand.random_range(0..=src_len))
                 .map(|_| rand.random_range(0..=255) as u8)
                 .collect::<Vec<u8>>();
-            let clevel: CLevel = rand.random_range(0..=9).try_into().unwrap();
+            let clevel: Level = rand.random_range(0..=9).try_into().unwrap();
             let shuffle = {
                 let shuffles = [Shuffle::None, Shuffle::Byte, Shuffle::Bit];
                 shuffles[rand.random_range(0..shuffles.len())]
