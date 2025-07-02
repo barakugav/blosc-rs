@@ -22,7 +22,7 @@ blosc = { package = "blosc-rs", version = "0.1" }
 
 In the following example we compress a vector of integers and then decompress it back:
 ```rust
-use blosc_rs::{CLevel, CompressAlgo, Shuffle, compress, decompress};
+use blosc_rs::{CompressAlgo, Encoder, Decoder};
 
 let data: [i32; 7] = [1, 2, 3, 4, 5, 6, 7];
 
@@ -33,18 +33,22 @@ let data_bytes = unsafe {
     )
 };
 let numinternalthreads = 4;
-let compressed = compress(
-    CLevel::L5,
-    Shuffle::Byte,
-    std::mem::size_of::<i32>(), // itemsize
-    data_bytes,
-    &CompressAlgo::Blosclz,
-    None, // automatic block size
-    numinternalthreads,
-)
-.unwrap();
 
-let decompressed = decompress(&compressed, numinternalthreads).unwrap();
+let compressed = Encoder::default()
+    .typesize(std::mem::size_of::<i32>())
+    .numinternalthreads(numinternalthreads)
+    .compress(&data_bytes)
+    .expect("failed to compress");
+
+let decoder = Decoder::new(&compressed).expect("invalid buffer");
+
+// Read some items using random access, without decompressing the entire buffer
+assert_eq!(&data_bytes[0..4], decoder.item(0).expect("failed to get the 0-th item"));
+assert_eq!(&data_bytes[12..16], decoder.item(3).expect("failed to get the 3-th item"));
+assert_eq!(&data_bytes[4..20], decoder.items(1..5).expect("failed to get items 1 to 4"));
+
+// Decompress the entire buffer
+let decompressed = decoder.decompress(numinternalthreads).expect("failed to decompress");
 // SAFETY: we know the data is of type i32
 let decompressed: &[i32] = unsafe {
     std::slice::from_raw_parts(
