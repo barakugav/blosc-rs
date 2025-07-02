@@ -35,7 +35,7 @@ let data_bytes = unsafe {
 let numinternalthreads = 4;
 
 let compressed = Encoder::default()
-    .typesize(std::mem::size_of::<i32>())
+    .typesize(std::mem::size_of::<i32>().try_into().unwrap())
     .numinternalthreads(numinternalthreads)
     .compress(&data_bytes)
     .expect("failed to compress");

@@ -33,7 +33,7 @@
 //! let numinternalthreads = 4;
 //!
 //! let compressed = Encoder::default()
-//!     .typesize(std::mem::size_of::<i32>())
+//!     .typesize(std::mem::size_of::<i32>().try_into().unwrap())
 //!     .numinternalthreads(numinternalthreads)
 //!     .compress(&data_bytes)
 //!     .expect("failed to compress");
@@ -76,7 +76,7 @@ pub const BLOSC_C_VERSION: &str = {
 pub struct Encoder {
     level: Level,
     shuffle: Shuffle,
-    typesize: usize,
+    typesize: NonZeroUsize,
     compressor: CompressAlgo,
     blocksize: Option<NonZeroUsize>,
     numinternalthreads: u32,
@@ -92,7 +92,7 @@ impl Encoder {
         Self {
             level,
             shuffle: Shuffle::Byte,
-            typesize: 1,
+            typesize: 1.try_into().unwrap(),
             compressor: CompressAlgo::Blosclz,
             blocksize: None,
             numinternalthreads: 1,
@@ -123,7 +123,7 @@ impl Encoder {
     /// by their index without decompressing the entire buffer. See [`Decoder::item`] and [`Decoder::items`].
     ///
     /// By default, the typesize is set to 1.
-    pub fn typesize(&mut self, typesize: usize) -> &mut Self {
+    pub fn typesize(&mut self, typesize: NonZeroUsize) -> &mut Self {
         self.typesize = typesize;
         self
     }
@@ -182,7 +182,7 @@ impl Encoder {
             blosc_sys::blosc_compress_ctx(
                 self.level.0 as i32 as std::ffi::c_int,
                 self.shuffle as u32 as std::ffi::c_int,
-                self.typesize,
+                self.typesize.get(),
                 src.len(),
                 src.as_ptr() as *const std::ffi::c_void,
                 dst.as_mut_ptr() as *mut std::ffi::c_void,
@@ -416,7 +416,7 @@ impl<'a> Decoder<'a> {
     /// };
     ///
     /// let compressed = Encoder::default()
-    ///     .typesize(std::mem::size_of::<i32>())
+    ///     .typesize(std::mem::size_of::<i32>().try_into().unwrap())
     ///     .compress(&data_bytes)
     ///     .expect("failed to compress");
     /// let mut decoder = Decoder::new(&compressed).expect("invalid buffer");
@@ -860,7 +860,7 @@ mod tests {
 
             let compressed = crate::Encoder::new(clevel)
                 .shuffle(shuffle)
-                .typesize(typesize)
+                .typesize(typesize.try_into().unwrap())
                 .compressor(compressor)
                 .blocksize(blocksize)
                 .numinternalthreads(numinternalthreads)
