@@ -20,7 +20,7 @@
 //!
 //! In the following example we compress a vector of integers and then decompress it back:
 //! ```rust
-//! use blosc_rs::{CLevel, CompressAlgo, Shuffle, compress, Decoder};
+//! use blosc_rs::{CompressAlgo, Encoder, Decoder};
 //!
 //! let data: [i32; 7] = [1, 2, 3, 4, 5, 6, 7];
 //!
@@ -31,21 +31,22 @@
 //!     )
 //! };
 //! let numinternalthreads = 4;
-//! let compressed = compress(
-//!     CLevel::L5,
-//!     Shuffle::Byte,
-//!     std::mem::size_of::<i32>(), // itemsize
-//!     data_bytes,
-//!     &CompressAlgo::Blosclz,
-//!     None, // automatic block size
-//!     numinternalthreads,
-//! )
-//! .unwrap();
 //!
-//! let decompressed = Decoder::new(&compressed)
-//!     .expect("invalid buffer")
-//!     .decompress(numinternalthreads)
-//!     .expect("failed to decompress");
+//! let compressed = Encoder::default()
+//!     .typesize(std::mem::size_of::<i32>())
+//!     .numinternalthreads(numinternalthreads)
+//!     .compress(&data_bytes)
+//!     .expect("failed to compress");
+//!
+//! let decoder = Decoder::new(&compressed).expect("invalid buffer");
+//!
+//! // Access some items using random random access, without decompressing the entire buffer
+//! assert_eq!(&data_bytes[0..4], decoder.item(0).expect("failed to get the 0-th item"));
+//! assert_eq!(&data_bytes[12..16], decoder.item(3).expect("failed to get the 3-th item"));
+//! assert_eq!(&data_bytes[20..24], decoder.item(5).expect("failed to get the 5-th item"));
+//!
+//! // Decompress the entire buffer
+//! let decompressed = decoder.decompress(numinternalthreads).expect("failed to decompress");
 //! // SAFETY: we know the data is of type i32
 //! let decompressed: &[i32] = unsafe {
 //!     std::slice::from_raw_parts(
@@ -75,110 +76,136 @@ pub const BLOSC_C_VERSION: &str = {
     }
 };
 
-/// Compress a block of data in the `src` buffer and returns the compressed data.
+/// Encoder for Blosc compression.
 ///
-/// Note that this function allocates a new `Vec<u8>` for the compressed data with the maximum possible size required
-/// for it (uncompressed size + 16), which may be larger than whats actually needed. If this function is used in a
-/// critical performance path, consider using `compress_into` instead, allowing you to provide a pre-allocated
-/// buffer which can be used repeatedly without the overhead of allocations.
-///
-/// # Arguments
-///
-/// * `clevel`: The desired compression level.
-/// * `shuffle`: Specifies which (if any) shuffle compression filters should be applied.
-/// * `typesize`: The number of bytes for the atomic type in the binary `src` buffer. This is mainly useful for the
-///   shuffle filters. For implementation reasons, only a `typesize` in the range 1 < `typesize` < 256 will allow the
-///   shuffle filter to work. When `typesize` is not in this range, shuffle will be silently disabled.
-/// * `src`: The source data to compress.
-/// * `compressor`: The compression algorithm to use.
-/// * `blocksize`: Optional block size for compression. If `None`, an automatic block size will be used.
-/// * `numinternalthreads`: The number of threads to use internally.
-///
-/// # Returns
-///
-/// A `Result` containing the compressed data as a `Vec<u8>`, or a `CompressError` if an error occurs.
-pub fn compress(
+/// This struct is not the usual stream-like encoder, but rather a configuration builder for the Blosc compression.
+/// This is because blosc is not a streaming compression library, and it operate on the entire data buffer at once.
+pub struct Encoder {
     clevel: CLevel,
     shuffle: Shuffle,
     typesize: usize,
-    src: &[u8],
-    compressor: &CompressAlgo,
+    compressor: CompressAlgo,
     blocksize: Option<NonZeroUsize>,
     numinternalthreads: u32,
-) -> Result<Vec<u8>, CompressError> {
-    let dst_max_len = src.len() + blosc_sys::BLOSC_MAX_OVERHEAD as usize;
-    let mut dst = Vec::<MaybeUninit<u8>>::with_capacity(dst_max_len);
-    unsafe { dst.set_len(dst_max_len) };
-
-    let len = compress_into(
-        clevel,
-        shuffle,
-        typesize,
-        src,
-        dst.as_mut_slice(),
-        compressor,
-        blocksize,
-        numinternalthreads,
-    )?;
-    assert!(len <= dst_max_len);
-    unsafe { dst.set_len(len) };
-    // SAFETY: every element from 0 to len was initialized
-    let vec = unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(dst) };
-    Ok(vec)
 }
-
-/// Compress a block of data in the `src` buffer into the `dst` buffer.
-///
-/// # Arguments
-///
-/// * `clevel`: The desired compression level.
-/// * `shuffle`: Specifies which (if any) shuffle compression filters should be applied.
-/// * `typesize`: The number of bytes for the atomic type in the binary `src` buffer. This is mainly useful for the
-///   shuffle filters. For implementation reasons, only a `typesize` in the range 1 < `typesize` < 256 will allow the
-///   shuffle filter to work. When `typesize` is not in this range, shuffle will be silently disabled.
-/// * `src`: The source data to compress.
-/// * `dst`: The destination buffer where the compressed data will be written.
-/// * `compressor`: The compression algorithm to use.
-/// * `blocksize`: Optional block size for compression. If `None`, an automatic block size will be used.
-/// * `numinternalthreads`: The number of threads to use internally.
-///
-/// # Returns
-///
-/// A `Result` containing the number of bytes written to the `dst` buffer, or a `CompressError` if an error occurs.
-#[allow(clippy::too_many_arguments)]
-pub fn compress_into(
-    clevel: CLevel,
-    shuffle: Shuffle,
-    typesize: usize,
-    src: &[u8],
-    dst: &mut [MaybeUninit<u8>],
-    compressor: &CompressAlgo,
-    blocksize: Option<NonZeroUsize>,
-    numinternalthreads: u32,
-) -> Result<usize, CompressError> {
-    let status = unsafe {
-        blosc_sys::blosc_compress_ctx(
-            clevel as i32 as std::ffi::c_int,
-            shuffle as u32 as std::ffi::c_int,
-            typesize,
-            src.len(),
-            src.as_ptr() as *const std::ffi::c_void,
-            dst.as_mut_ptr() as *mut std::ffi::c_void,
-            dst.len(),
-            compressor.as_ref().as_ptr(),
-            blocksize.map(|b| b.get()).unwrap_or(0),
-            numinternalthreads as std::ffi::c_int,
-        )
-    };
-    match status {
-        len if len > 0 => {
-            assert!(len as usize <= dst.len());
-            Ok(len as usize)
+impl Default for Encoder {
+    fn default() -> Self {
+        Self::new(CLevel::L9)
+    }
+}
+impl Encoder {
+    /// Create a new encoder with the specified compression level.
+    pub fn new(level: CLevel) -> Self {
+        Self {
+            clevel: level,
+            shuffle: Shuffle::Byte,
+            typesize: 1,
+            compressor: CompressAlgo::Blosclz,
+            blocksize: None,
+            numinternalthreads: 1,
         }
-        0 => Err(CompressError::DestinationBufferTooSmall),
-        _ => {
-            debug_assert!(status < 0);
-            Err(CompressError::InternalError(status))
+    }
+
+    /// Sets the compression level for the encoder.
+    pub fn level(&mut self, level: CLevel) -> &mut Self {
+        self.clevel = level;
+        self
+    }
+
+    /// Sets which (if any) shuffle compression filters should be applied.
+    ///
+    /// By default, the shuffle filter is set to `Shuffle::Byte`.
+    pub fn shuffle(&mut self, shuffle: Shuffle) -> &mut Self {
+        self.shuffle = shuffle;
+        self
+    }
+
+    /// Sets the typesize for the encoder.
+    ///
+    /// This is the number of bytes for the atomic type in the binary `src` buffer.
+    /// For implementation reasons, only a `typesize` in the range 1 < `typesize` < 256 will allow the
+    /// shuffle filter to work. When `typesize` is not in this range, shuffle will be silently disabled.
+    ///
+    /// By default, the typesize is set to 1.
+    pub fn typesize(&mut self, typesize: usize) -> &mut Self {
+        self.typesize = typesize;
+        self
+    }
+
+    /// Sets the compression algorithm to use.
+    ///
+    /// By default, the compression algorithm is set to `CompressAlgo::Blosclz`.
+    pub fn compressor(&mut self, compressor: CompressAlgo) -> &mut Self {
+        self.compressor = compressor;
+        self
+    }
+
+    /// Sets the block size for compression.
+    ///
+    /// If `None`, an automatic block size will be used.
+    /// By default, the block size is set to `None`.
+    pub fn blocksize(&mut self, blocksize: Option<NonZeroUsize>) -> &mut Self {
+        self.blocksize = blocksize;
+        self
+    }
+
+    /// Sets the number of threads to use internally for compression.
+    ///
+    /// By default, the number of internal threads is set to 1.
+    pub fn numinternalthreads(&mut self, numinternalthreads: u32) -> &mut Self {
+        self.numinternalthreads = numinternalthreads;
+        self
+    }
+
+    /// Compress a block of data in the `src` buffer and returns the compressed data.
+    ///
+    /// Note that this function allocates a new `Vec<u8>` for the compressed data with the maximum possible size
+    /// required for it (uncompressed size + 16), which may be larger than whats actually needed. If this function is
+    /// used in a critical performance path, consider using `compress_into` instead, allowing you to provide a
+    /// pre-allocated buffer which can be used repeatedly without the overhead of allocations.
+    pub fn compress(&self, src: &[u8]) -> Result<Vec<u8>, CompressError> {
+        let dst_max_len = src.len() + blosc_sys::BLOSC_MAX_OVERHEAD as usize;
+        let mut dst = Vec::<MaybeUninit<u8>>::with_capacity(dst_max_len);
+        unsafe { dst.set_len(dst_max_len) };
+
+        let len = self.compress_into(src, dst.as_mut_slice())?;
+        assert!(len <= dst_max_len);
+        unsafe { dst.set_len(len) };
+        // SAFETY: every element from 0 to len was initialized
+        let vec = unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(dst) };
+        Ok(vec)
+    }
+
+    /// Compress a block of data in the `src` buffer into the `dst` buffer.
+    pub fn compress_into(
+        &self,
+        src: &[u8],
+        dst: &mut [MaybeUninit<u8>],
+    ) -> Result<usize, CompressError> {
+        let status = unsafe {
+            blosc_sys::blosc_compress_ctx(
+                self.clevel as i32 as std::ffi::c_int,
+                self.shuffle as u32 as std::ffi::c_int,
+                self.typesize,
+                src.len(),
+                src.as_ptr() as *const std::ffi::c_void,
+                dst.as_mut_ptr() as *mut std::ffi::c_void,
+                dst.len(),
+                self.compressor.as_ref().as_ptr(),
+                self.blocksize.map(|b| b.get()).unwrap_or(0),
+                self.numinternalthreads as std::ffi::c_int,
+            )
+        };
+        match status {
+            len if len > 0 => {
+                assert!(len as usize <= dst.len());
+                Ok(len as usize)
+            }
+            0 => Err(CompressError::DestinationBufferTooSmall),
+            _ => {
+                debug_assert!(status < 0);
+                Err(CompressError::InternalError(status))
+            }
         }
     }
 }
@@ -207,6 +234,7 @@ impl std::error::Error for CompressError {}
 ///
 /// The levels range from 0 to 9, where 0 is no compression and 9 is maximum compression.
 #[allow(missing_docs)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(i32)]
 pub enum CLevel {
     L0 = 0,
@@ -278,40 +306,13 @@ impl AsRef<CStr> for CompressAlgo {
     }
 }
 
-/// Error that can occur during decompression.
-#[derive(Debug)]
-pub enum DecompressError {
-    /// Error indicating that the destination buffer is too small to hold the decompressed data.
-    DestinationBufferTooSmall,
-    /// Error indicating that the data could not be decompressed.
-    DecompressingError,
-    /// blosc internal error.
-    InternalError(i32),
-    /// An I/O error occurred while reading the compressed data.
-    IoError(std::io::Error),
-}
-impl From<std::io::Error> for DecompressError {
-    fn from(err: std::io::Error) -> Self {
-        DecompressError::IoError(err)
-    }
-}
-impl std::fmt::Display for DecompressError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DecompressError::DestinationBufferTooSmall => {
-                f.write_str("destination buffer is too small")
-            }
-            DecompressError::DecompressingError => f.write_str("failed to decompress the data"),
-            DecompressError::InternalError(status) => write!(f, "blosc internal error: {status}"),
-            DecompressError::IoError(err) => write!(f, "I/O error: {}", err),
-        }
-    }
-}
-impl std::error::Error for DecompressError {}
-
 /// A decoder for Blosc compressed data.
 ///
-/// The compressed data is held in memory in the decoder, and decoding is done either by decompressing the entire
+/// This struct is not the usual stream-like decoder, but rather an array-like object that allows random access to
+/// elements in the compressed data or decoding the entire buffer. This is because blosc is not a streaming library,
+/// and it operates on the entire data buffer at once.
+///
+/// The compressed data is held in memory within the decoder, and decoding is done either by decompressing the entire
 /// buffer, or by accessing individual items or ranges of items. In both cases, the decoder remains unchanged and only
 /// the compressed data is held by it.
 pub struct Decoder<'a> {
@@ -322,9 +323,9 @@ pub struct Decoder<'a> {
 impl<'a> Decoder<'a> {
     /// Create a new decoder from a reader that contains Blosc compressed data.
     ///
-    /// First, a header of a fixed size is read from the reader, which contains metadata about the length of the
-    /// compressed data. Then, the rest of the compressed data is read into a new buffer. The created decoder holds
-    /// the entire compressed data in memory, and the reader is not used after this point.
+    /// First a header of a fixed size is read from the reader, which contains metadata about the length of the
+    /// compressed data. Then the rest of the compressed data is read into an in-memory internal buffer held by the
+    /// decoder, and the reader is not used after this point.
     pub fn from_reader(reader: &mut impl Read) -> Result<Self, DecompressError> {
         // Read the header
         let mut header =
@@ -420,8 +421,8 @@ impl<'a> Decoder<'a> {
         let mut dst = Vec::<MaybeUninit<u8>>::with_capacity(self.dst_len);
         unsafe { dst.set_len(self.dst_len) };
 
-        let len =
-            unsafe { self.decompress_into_unchecked(dst.as_mut_slice(), numinternalthreads)? };
+        let len = self.decompress_into(dst.as_mut_slice(), numinternalthreads)?;
+
         assert!(len <= self.dst_len);
         unsafe { dst.set_len(len) };
         // SAFETY: every element from 0 to len was initialized
@@ -447,16 +448,7 @@ impl<'a> Decoder<'a> {
         if dst.len() < self.dst_len {
             return Err(DecompressError::DestinationBufferTooSmall);
         }
-        let len = unsafe { self.decompress_into_unchecked(dst, numinternalthreads)? };
-        assert!(len <= self.dst_len);
-        Ok(len)
-    }
 
-    unsafe fn decompress_into_unchecked(
-        &self,
-        dst: &mut [MaybeUninit<u8>],
-        numinternalthreads: u32,
-    ) -> Result<usize, DecompressError> {
         let status = unsafe {
             blosc_sys::blosc_decompress_ctx(
                 self.src.as_ptr() as *const std::ffi::c_void,
@@ -466,7 +458,10 @@ impl<'a> Decoder<'a> {
             )
         };
         match status {
-            len if len >= 0 => Ok(len as usize),
+            len if len >= 0 => {
+                assert!(len as usize <= self.dst_len);
+                Ok(len as usize)
+            }
             _ => Err(DecompressError::InternalError(status)),
         }
     }
@@ -529,6 +524,37 @@ impl<'a> Decoder<'a> {
     }
 }
 
+/// Error that can occur during decompression.
+#[derive(Debug)]
+pub enum DecompressError {
+    /// Error indicating that the destination buffer is too small to hold the decompressed data.
+    DestinationBufferTooSmall,
+    /// Error indicating that the data could not be decompressed.
+    DecompressingError,
+    /// blosc internal error.
+    InternalError(i32),
+    /// An I/O error occurred while reading the compressed data.
+    IoError(std::io::Error),
+}
+impl From<std::io::Error> for DecompressError {
+    fn from(err: std::io::Error) -> Self {
+        DecompressError::IoError(err)
+    }
+}
+impl std::fmt::Display for DecompressError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DecompressError::DestinationBufferTooSmall => {
+                f.write_str("destination buffer is too small")
+            }
+            DecompressError::DecompressingError => f.write_str("failed to decompress the data"),
+            DecompressError::InternalError(status) => write!(f, "blosc internal error: {status}"),
+            DecompressError::IoError(err) => write!(f, "I/O error: {}", err),
+        }
+    }
+}
+impl std::error::Error for DecompressError {}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;
@@ -584,16 +610,14 @@ mod tests {
             };
             let numinternalthreads = rand.random_range(1..=16);
 
-            let compressed = crate::compress(
-                clevel,
-                shuffle,
-                typesize,
-                &src,
-                &compressor,
-                blocksize,
-                numinternalthreads,
-            )
-            .unwrap();
+            let compressed = crate::Encoder::new(clevel)
+                .shuffle(shuffle)
+                .typesize(typesize)
+                .compressor(compressor)
+                .blocksize(blocksize)
+                .numinternalthreads(numinternalthreads)
+                .compress(&src)
+                .unwrap();
 
             let decoder = crate::Decoder::new(&compressed).unwrap();
             let items_num = src.len() / typesize;
