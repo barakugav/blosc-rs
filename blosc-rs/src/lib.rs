@@ -740,66 +740,61 @@ impl std::fmt::Display for AlignmentError {
 impl std::error::Error for AlignmentError {}
 
 fn new_vec_aligned(size: usize, alignment: Alignment) -> Vec<MaybeUninit<u8>> {
-    unsafe fn new_vec_aligned_impl<DUMMY>() -> Vec<u8> {
+    unsafe fn new_vec_aligned_impl<DUMMY>(size: usize) -> Vec<MaybeUninit<u8>> {
         let alignment = std::mem::align_of::<DUMMY>();
         assert_eq!(alignment, std::mem::size_of::<DUMMY>());
         assert!(alignment.is_power_of_two());
 
-        let raw_vec = Vec::<DUMMY>::new();
-        let ptr = raw_vec.as_ptr() as *mut u8;
+        let raw_vec = Vec::<MaybeUninit<DUMMY>>::with_capacity(size.div_ceil(alignment));
         let capacity = raw_vec.capacity() * std::mem::size_of::<DUMMY>();
+        let ptr = raw_vec.as_ptr() as *mut MaybeUninit<u8>;
         std::mem::forget(raw_vec);
-        unsafe { Vec::from_raw_parts(ptr, 0, capacity) }
+        unsafe { Vec::from_raw_parts(ptr, size, capacity) }
     }
 
     macro_rules! new_vec_aligned_impl {
-        ($alignment:expr) => {{
+        ($size:expr, $alignment:expr) => {{
             #[repr(align($alignment))]
             struct AlignedDummy(#[allow(dead_code)] [u8; $alignment]);
-            unsafe { new_vec_aligned_impl::<AlignedDummy>() }
+            unsafe { new_vec_aligned_impl::<AlignedDummy>(size) }
         }};
     }
 
     let vec = match alignment {
-        Alignment::A0 => new_vec_aligned_impl!(1),
-        Alignment::A1 => new_vec_aligned_impl!(2),
-        Alignment::A2 => new_vec_aligned_impl!(4),
-        Alignment::A3 => new_vec_aligned_impl!(8),
-        Alignment::A4 => new_vec_aligned_impl!(16),
-        Alignment::A5 => new_vec_aligned_impl!(32),
-        Alignment::A6 => new_vec_aligned_impl!(64),
-        Alignment::A7 => new_vec_aligned_impl!(128),
-        Alignment::A8 => new_vec_aligned_impl!(256),
-        Alignment::A9 => new_vec_aligned_impl!(512),
-        Alignment::A10 => new_vec_aligned_impl!(1024),
-        Alignment::A11 => new_vec_aligned_impl!(2048),
-        Alignment::A12 => new_vec_aligned_impl!(4096),
-        Alignment::A13 => new_vec_aligned_impl!(8192),
-        Alignment::A14 => new_vec_aligned_impl!(16384),
-        Alignment::A15 => new_vec_aligned_impl!(32768),
-        Alignment::A16 => new_vec_aligned_impl!(65536),
-        Alignment::A17 => new_vec_aligned_impl!(131072),
-        Alignment::A18 => new_vec_aligned_impl!(262144),
-        Alignment::A19 => new_vec_aligned_impl!(524288),
-        Alignment::A20 => new_vec_aligned_impl!(1048576),
-        Alignment::A21 => new_vec_aligned_impl!(2097152),
-        Alignment::A22 => new_vec_aligned_impl!(4194304),
-        Alignment::A23 => new_vec_aligned_impl!(8388608),
-        Alignment::A24 => new_vec_aligned_impl!(16777216),
-        Alignment::A25 => new_vec_aligned_impl!(33554432),
-        Alignment::A26 => new_vec_aligned_impl!(67108864),
-        Alignment::A27 => new_vec_aligned_impl!(134217728),
-        Alignment::A28 => new_vec_aligned_impl!(268435456),
-        Alignment::A29 => new_vec_aligned_impl!(536870912),
+        Alignment::A0 => new_vec_aligned_impl!(size, 1),
+        Alignment::A1 => new_vec_aligned_impl!(size, 2),
+        Alignment::A2 => new_vec_aligned_impl!(size, 4),
+        Alignment::A3 => new_vec_aligned_impl!(size, 8),
+        Alignment::A4 => new_vec_aligned_impl!(size, 16),
+        Alignment::A5 => new_vec_aligned_impl!(size, 32),
+        Alignment::A6 => new_vec_aligned_impl!(size, 64),
+        Alignment::A7 => new_vec_aligned_impl!(size, 128),
+        Alignment::A8 => new_vec_aligned_impl!(size, 256),
+        Alignment::A9 => new_vec_aligned_impl!(size, 512),
+        Alignment::A10 => new_vec_aligned_impl!(size, 1024),
+        Alignment::A11 => new_vec_aligned_impl!(size, 2048),
+        Alignment::A12 => new_vec_aligned_impl!(size, 4096),
+        Alignment::A13 => new_vec_aligned_impl!(size, 8192),
+        Alignment::A14 => new_vec_aligned_impl!(size, 16384),
+        Alignment::A15 => new_vec_aligned_impl!(size, 32768),
+        Alignment::A16 => new_vec_aligned_impl!(size, 65536),
+        Alignment::A17 => new_vec_aligned_impl!(size, 131072),
+        Alignment::A18 => new_vec_aligned_impl!(size, 262144),
+        Alignment::A19 => new_vec_aligned_impl!(size, 524288),
+        Alignment::A20 => new_vec_aligned_impl!(size, 1048576),
+        Alignment::A21 => new_vec_aligned_impl!(size, 2097152),
+        Alignment::A22 => new_vec_aligned_impl!(size, 4194304),
+        Alignment::A23 => new_vec_aligned_impl!(size, 8388608),
+        Alignment::A24 => new_vec_aligned_impl!(size, 16777216),
+        Alignment::A25 => new_vec_aligned_impl!(size, 33554432),
+        Alignment::A26 => new_vec_aligned_impl!(size, 67108864),
+        Alignment::A27 => new_vec_aligned_impl!(size, 134217728),
+        Alignment::A28 => new_vec_aligned_impl!(size, 268435456),
+        Alignment::A29 => new_vec_aligned_impl!(size, 536870912),
     };
 
     assert_eq!(0, vec.as_ptr() as usize % alignment as usize);
-    assert_eq!(0, vec.len());
-
-    let mut vec = unsafe { std::mem::transmute::<Vec<u8>, Vec<MaybeUninit<u8>>>(vec) };
-    vec.reserve(size);
-    unsafe { vec.set_len(size) };
-
+    assert_eq!(size, vec.len());
     vec
 }
 
@@ -867,23 +862,39 @@ mod tests {
                 .compress(&src)
                 .unwrap();
 
-            let decoder = crate::Decoder::new(&compressed).unwrap();
+            let mut decoder = crate::Decoder::new(&compressed).unwrap();
+            let alignment = rand
+                .random::<bool>()
+                .then(|| 1 << rand.random_range(0..=16));
+            if let Some(alignment) = alignment {
+                decoder.set_decompression_alignment(alignment).unwrap();
+            }
+
             let items_num = src.len() / typesize;
             if items_num > 0 {
                 for _ in 0..10 {
                     let idx = rand.random_range(0..items_num);
                     let item = decoder.item(idx).unwrap();
+                    if let Some(alignment) = alignment {
+                        assert!(item.as_ptr() as usize % alignment == 0);
+                    }
                     assert_eq!(item, src[idx * typesize..(idx + 1) * typesize]);
                 }
                 for _ in 0..10 {
                     let start = rand.random_range(0..items_num);
                     let end = rand.random_range(start..items_num);
                     let items = decoder.items(start..end).unwrap();
+                    if let Some(alignment) = alignment {
+                        assert!(items.as_ptr() as usize % alignment == 0);
+                    }
                     assert_eq!(items, src[start * typesize..end * typesize]);
                 }
             }
 
             let decompressed = decoder.decompress(numinternalthreads).unwrap();
+            if let Some(alignment) = alignment {
+                assert!(decompressed.as_ptr() as usize % alignment == 0);
+            }
             assert_eq!(src, decompressed);
         }
     }
