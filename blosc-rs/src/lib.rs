@@ -309,7 +309,6 @@ pub struct Decoder<'a> {
     src: Cow<'a, [u8]>,
     typesize: usize,
     dst_len: usize,
-    decompression_alignment: Alignment,
 }
 impl<'a> Decoder<'a> {
     /// Create a new decoder from a reader that contains Blosc compressed data.
@@ -395,79 +394,7 @@ impl<'a> Decoder<'a> {
             src,
             typesize,
             dst_len,
-            decompression_alignment: Alignment::new(1).unwrap(),
         })
-    }
-
-    /// Set the alignment used when allocating vectors for decompression.
-    ///
-    /// The alignment argument will be used for all vectors returned by `decompress`, `item` and `items` methods.
-    /// This is useful for transmuting the decompressed data into original type. Consider the following
-    /// use case for example:
-    /// ```rust
-    /// use blosc_rs::{CompressAlgo, Encoder, Decoder};
-    ///
-    /// let data: [i32; 7] = [1, 2, 3, 4, 5, 6, 7];
-    /// let data_bytes = unsafe {
-    ///     std::slice::from_raw_parts(
-    ///         data.as_ptr() as *const u8,
-    ///         data.len() * std::mem::size_of::<i32>(),
-    ///     )
-    /// };
-    ///
-    /// let compressed = Encoder::default()
-    ///     .typesize(std::mem::size_of::<i32>().try_into().unwrap())
-    ///     .compress(&data_bytes)
-    ///     .expect("failed to compress");
-    /// let mut decoder = Decoder::new(&compressed).expect("invalid buffer");
-    ///
-    /// // Decompress the data without setting the alignment
-    /// let decompressed_unaligned = decoder.decompress(1).expect("failed to decompress");
-    /// // !! NOT SAFE !!
-    /// let _not_safe_decompressed: &[i32] = unsafe {
-    ///     std::slice::from_raw_parts(
-    ///         // there is no guaruntee the slice pointer is aligned to i32's alignment
-    ///         decompressed_unaligned.as_ptr() as *const i32,
-    ///         decompressed_unaligned.len() / std::mem::size_of::<i32>(),
-    ///     )
-    /// };
-    ///
-    /// let decompressed = decoder
-    ///     .set_decompression_alignment(std::mem::align_of::<i32>())
-    ///     .unwrap()
-    ///     .decompress(1)
-    ///     .expect("failed to decompress");
-    /// assert!(decompressed.as_ptr() as usize % std::mem::align_of::<i32>() == 0);
-    /// // SAFETY: we know the data is of type i32 and the slice pointer is aligned to i32's alignment
-    /// let decompressed: &[i32] = unsafe {
-    ///     std::slice::from_raw_parts(
-    ///         decompressed.as_ptr() as *const i32,
-    ///         decompressed.len() / std::mem::size_of::<i32>(),
-    ///     )
-    /// };
-    /// assert_eq!(decompressed, &data);
-    /// let item = decoder.item(3).expect("failed to get an item");
-    /// assert!(item.as_ptr() as usize % std::mem::align_of::<i32>() == 0);
-    /// // SAFETY: we know the item is of type i32 and the slice pointer is aligned to i32's alignment
-    /// let item = unsafe { *(item.as_ptr() as *const i32) };
-    /// assert_eq!(item, 4);
-    /// ```
-    ///
-    /// By default, the alignment is set to 1.
-    ///
-    /// # Arguments
-    ///
-    /// * `alignment`: The alignment to use, must be a power of two.
-    ///
-    /// # Returns
-    ///
-    /// Ok or Err if the alignment is not a power of two.
-    pub fn set_decompression_alignment(
-        &mut self,
-        alignment: usize,
-    ) -> Result<&mut Self, AlignmentError> {
-        self.decompression_alignment = Alignment::new(alignment)?;
-        Ok(self)
     }
 
     /// Decompress the entire buffer and return the decompressed data as a `Vec<u8>`.
@@ -475,8 +402,8 @@ impl<'a> Decoder<'a> {
     /// Note that the returned vector may not be aligned to the original data type's alignment, and the caller should
     /// ensure that the alignment is correct before transmuting it to original type. If the alignment does not match
     /// the original data type, the bytes should be copied to a new aligned allocation before transmuting, otherwise
-    /// undefined behavior may occur. To enforce a specific alignment, use [`Self::set_decompression_alignment`]
-    /// affecting this, [`Self::item`] and [`Self::items`] methods.
+    /// undefined behavior may occur. Alternatively, the caller can use [`Self::decompress_into`] and provide an already
+    /// aligned destination buffer.
     ///
     /// # Arguments
     ///
@@ -486,7 +413,8 @@ impl<'a> Decoder<'a> {
     ///
     /// A `Result` containing the decompressed data as a `Vec<u8>`, or a `DecompressError` if an error occurs.
     pub fn decompress(&self, numinternalthreads: u32) -> Result<Vec<u8>, DecompressError> {
-        let mut dst = new_vec_aligned(self.dst_len, self.decompression_alignment);
+        let mut dst = Vec::<MaybeUninit<u8>>::with_capacity(self.dst_len);
+        unsafe { dst.set_len(self.dst_len) };
         let len = self.decompress_into(dst.as_mut_slice(), numinternalthreads)?;
 
         assert!(len <= self.dst_len);
@@ -552,8 +480,8 @@ impl<'a> Decoder<'a> {
     /// Note that the returned vector may not be aligned to the original data type's alignment, and the caller should
     /// ensure that the alignment is correct before transmuting it to original type. If the alignment does not match
     /// the original data type, the bytes should be copied to a new aligned allocation before transmuting, otherwise
-    /// undefined behavior may occur. To enforce a specific alignment, use [`Self::set_decompression_alignment`]
-    /// affecting this, [`Self::items`] and [`Self::decompress`] methods.
+    /// undefined behavior may occur. Alternatively, the caller can use [`Self::item_into`] and provide an already
+    /// aligned destination buffer.
     ///
     pub fn item(&self, idx: usize) -> Result<Vec<u8>, DecompressError> {
         self.items(idx..idx + 1)
@@ -580,12 +508,16 @@ impl<'a> Decoder<'a> {
     /// Note that the returned vector may not be aligned to the original data type's alignment, and the caller should
     /// ensure that the alignment is correct before transmuting it to original type. If the alignment does not match
     /// the original data type, the bytes should be copied to a new aligned allocation before transmuting, otherwise
-    /// undefined behavior may occur. To enforce a specific alignment, use [`Self::set_decompression_alignment`]
-    /// affecting this, [`Self::item`] and [`Self::decompress`] methods.
+    /// undefined behavior may occur. Alternatively, the caller can use [`Self::items_into`] and provide an already
+    /// aligned destination buffer.
     pub fn items(&self, idx: std::ops::Range<usize>) -> Result<Vec<u8>, DecompressError> {
-        let mut dst = new_vec_aligned(self.typesize * idx.len(), self.decompression_alignment);
-        self.items_into(idx, &mut dst)?;
-        // SAFETY: every element in dst is initialized
+        let mut dst = Vec::<MaybeUninit<u8>>::with_capacity(self.typesize * idx.len());
+        unsafe { dst.set_len(self.typesize * idx.len()) };
+        let len = self.items_into(idx, &mut dst)?;
+
+        assert!(len <= dst.len());
+        unsafe { dst.set_len(len) };
+        // SAFETY: every element from 0 to len was initialized
         Ok(unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(dst) })
     }
 
@@ -655,153 +587,6 @@ impl std::fmt::Display for DecompressError {
     }
 }
 impl std::error::Error for DecompressError {}
-
-#[derive(Clone, Copy)]
-#[repr(usize)]
-enum Alignment {
-    A0 = 1,
-    A1 = 2,
-    A2 = 4,
-    A3 = 8,
-    A4 = 16,
-    A5 = 32,
-    A6 = 64,
-    A7 = 128,
-    A8 = 256,
-    A9 = 512,
-    A10 = 1024,
-    A11 = 2048,
-    A12 = 4096,
-    A13 = 8192,
-    A14 = 16384,
-    A15 = 32768,
-    A16 = 65536,
-    A17 = 131072,
-    A18 = 262144,
-    A19 = 524288,
-    A20 = 1048576,
-    A21 = 2097152,
-    A22 = 4194304,
-    A23 = 8388608,
-    A24 = 16777216,
-    A25 = 33554432,
-    A26 = 67108864,
-    A27 = 134217728,
-    A28 = 268435456,
-    A29 = 536870912,
-}
-impl Alignment {
-    fn new(align: usize) -> Result<Self, AlignmentError> {
-        Ok(match align {
-            0 | 1 => Self::A0,
-            2 => Self::A1,
-            4 => Self::A2,
-            8 => Self::A3,
-            16 => Self::A4,
-            32 => Self::A5,
-            64 => Self::A6,
-            128 => Self::A7,
-            256 => Self::A8,
-            512 => Self::A9,
-            1024 => Self::A10,
-            2048 => Self::A11,
-            4096 => Self::A12,
-            8192 => Self::A13,
-            16384 => Self::A14,
-            32768 => Self::A15,
-            65536 => Self::A16,
-            131072 => Self::A17,
-            262144 => Self::A18,
-            524288 => Self::A19,
-            1048576 => Self::A20,
-            2097152 => Self::A21,
-            4194304 => Self::A22,
-            8388608 => Self::A23,
-            16777216 => Self::A24,
-            33554432 => Self::A25,
-            67108864 => Self::A26,
-            134217728 => Self::A27,
-            268435456 => Self::A28,
-            536870912 => Self::A29,
-            _ => return Err(AlignmentError),
-        })
-    }
-}
-
-/// Error representing an invalid alignment value.
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct AlignmentError;
-impl std::fmt::Display for AlignmentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("alignment must be a power of two, smaller or equal to 2^30")
-    }
-}
-impl std::error::Error for AlignmentError {}
-
-fn new_vec_aligned(size: usize, alignment: Alignment) -> Vec<MaybeUninit<u8>> {
-    unsafe fn new_vec_aligned_impl<DUMMY>() -> Vec<u8> {
-        let alignment = std::mem::align_of::<DUMMY>();
-        assert_eq!(alignment, std::mem::size_of::<DUMMY>());
-        assert!(alignment.is_power_of_two());
-
-        let raw_vec = Vec::<DUMMY>::new();
-        let ptr = raw_vec.as_ptr() as *mut u8;
-        let capacity = raw_vec.capacity() * std::mem::size_of::<DUMMY>();
-        std::mem::forget(raw_vec);
-        unsafe { Vec::from_raw_parts(ptr, 0, capacity) }
-    }
-
-    macro_rules! new_vec_aligned_impl {
-        ($alignment:expr) => {{
-            #[repr(align($alignment))]
-            struct AlignedDummy(#[allow(dead_code)] [u8; $alignment]);
-            unsafe { new_vec_aligned_impl::<AlignedDummy>() }
-        }};
-    }
-
-    let vec = match alignment {
-        Alignment::A0 => new_vec_aligned_impl!(1),
-        Alignment::A1 => new_vec_aligned_impl!(2),
-        Alignment::A2 => new_vec_aligned_impl!(4),
-        Alignment::A3 => new_vec_aligned_impl!(8),
-        Alignment::A4 => new_vec_aligned_impl!(16),
-        Alignment::A5 => new_vec_aligned_impl!(32),
-        Alignment::A6 => new_vec_aligned_impl!(64),
-        Alignment::A7 => new_vec_aligned_impl!(128),
-        Alignment::A8 => new_vec_aligned_impl!(256),
-        Alignment::A9 => new_vec_aligned_impl!(512),
-        Alignment::A10 => new_vec_aligned_impl!(1024),
-        Alignment::A11 => new_vec_aligned_impl!(2048),
-        Alignment::A12 => new_vec_aligned_impl!(4096),
-        Alignment::A13 => new_vec_aligned_impl!(8192),
-        Alignment::A14 => new_vec_aligned_impl!(16384),
-        Alignment::A15 => new_vec_aligned_impl!(32768),
-        Alignment::A16 => new_vec_aligned_impl!(65536),
-        Alignment::A17 => new_vec_aligned_impl!(131072),
-        Alignment::A18 => new_vec_aligned_impl!(262144),
-        Alignment::A19 => new_vec_aligned_impl!(524288),
-        Alignment::A20 => new_vec_aligned_impl!(1048576),
-        Alignment::A21 => new_vec_aligned_impl!(2097152),
-        Alignment::A22 => new_vec_aligned_impl!(4194304),
-        Alignment::A23 => new_vec_aligned_impl!(8388608),
-        Alignment::A24 => new_vec_aligned_impl!(16777216),
-        Alignment::A25 => new_vec_aligned_impl!(33554432),
-        Alignment::A26 => new_vec_aligned_impl!(67108864),
-        Alignment::A27 => new_vec_aligned_impl!(134217728),
-        Alignment::A28 => new_vec_aligned_impl!(268435456),
-        Alignment::A29 => new_vec_aligned_impl!(536870912),
-    };
-
-    assert_eq!(0, vec.as_ptr() as usize % alignment as usize);
-    assert_eq!(0, vec.len());
-
-    let mut vec = unsafe { std::mem::transmute::<Vec<u8>, Vec<MaybeUninit<u8>>>(vec) };
-    vec.reserve(size);
-    unsafe { vec.set_len(size) };
-
-    vec
-}
 
 #[cfg(test)]
 mod tests {
