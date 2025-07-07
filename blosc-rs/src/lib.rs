@@ -49,9 +49,13 @@
 //! let decompressed = decoder.decompress(numinternalthreads).expect("failed to decompress");
 //! assert_eq!(data_bytes, decompressed);
 //! ```
+//!
+//! ## Features
+//! Cargo features enable or disable support for various compression codecs such as `zstd`, `lz4` and `zlib`.
+//! The `blosclz` codec is always supported.
 
 use std::borrow::Cow;
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::io::Read;
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
@@ -271,27 +275,35 @@ pub enum Shuffle {
 }
 
 /// Represents the compression algorithms supported by Blosc.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(missing_docs)]
 pub enum CompressAlgo {
     Blosclz,
+    #[cfg(feature = "lz4")]
     Lz4,
+    #[cfg(feature = "lz4")]
     Lz4hc,
+    // #[cfg(feature = "snappy")]
     // Snappy,
+    #[cfg(feature = "zlib")]
     Zlib,
+    #[cfg(feature = "zstd")]
     Zstd,
-    Other(CString),
 }
 impl AsRef<CStr> for CompressAlgo {
     fn as_ref(&self) -> &CStr {
         match self {
             CompressAlgo::Blosclz => c"blosclz",
+            #[cfg(feature = "lz4")]
             CompressAlgo::Lz4 => c"lz4",
+            #[cfg(feature = "lz4")]
             CompressAlgo::Lz4hc => c"lz4hc",
+            // #[cfg(feature = "snappy")]
             // CompressAlgo::Snappy => c"snappy",
+            #[cfg(feature = "zlib")]
             CompressAlgo::Zlib => c"zlib",
+            #[cfg(feature = "zstd")]
             CompressAlgo::Zstd => c"zstd",
-            CompressAlgo::Other(c) => c.as_ref(),
         }
     }
 }
@@ -367,17 +379,18 @@ impl<'a> Decoder<'a> {
         let src: Cow<'a, [u8]> = src.into();
 
         // Validate
-        let mut dst_len = 0;
+        let mut dst_len = MaybeUninit::uninit();
         let status = unsafe {
             blosc_sys::blosc_cbuffer_validate(
                 src.as_ptr() as *const std::ffi::c_void,
                 src.len(),
-                &mut dst_len,
+                &mut dst_len as *mut MaybeUninit<usize> as *mut usize,
             )
         };
         if status < 0 {
             return Err(DecompressError::DecompressingError);
         }
+        let dst_len = unsafe { dst_len.assume_init() };
 
         let mut typesize = MaybeUninit::<usize>::uninit();
         let mut flags = MaybeUninit::<std::ffi::c_int>::uninit();
@@ -622,10 +635,15 @@ mod tests {
             let compressor = {
                 let compressors = [
                     CompressAlgo::Blosclz,
+                    #[cfg(feature = "lz4")]
                     CompressAlgo::Lz4,
+                    #[cfg(feature = "lz4")]
                     CompressAlgo::Lz4hc,
+                    // #[cfg(feature = "snappy")]
                     // CompressAlgo::Snappy,
+                    #[cfg(feature = "zlib")]
                     CompressAlgo::Zlib,
+                    #[cfg(feature = "zstd")]
                     CompressAlgo::Zstd,
                 ];
                 compressors[rand.random_range(0..compressors.len())].clone()
