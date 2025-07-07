@@ -1,4 +1,7 @@
 //! Unsafe Rust bindings for blosc - a blocking, shuffling and lossless compression library.
+//!
+//! Cargo features enable or disable support for various compression codecs such as `zstd`, `lz4` and `zlib`.
+//! The `blosclz` codec is always supported.
 
 mod c_bridge {
     #![allow(dead_code)]

@@ -38,6 +38,7 @@ fn build_c_lib() -> String {
         Command::new("git")
             .args([
                 "clone",
+                "--quiet",
                 "--depth",
                 "1",
                 "--branch",
@@ -54,11 +55,17 @@ fn build_c_lib() -> String {
     }
 
     let mut build = cmake::Config::new(&blosc_dir);
+    let bool2opt = |b: bool| if b { "ON" } else { "OFF" };
     build
         .define("BUILD_STATIC", "ON")
         .define("BUILD_SHARED", "OFF")
         .define("BUILD_TESTS", "OFF")
+        .define("BUILD_FUZZERS", "OFF")
         .define("BUILD_BENCHMARKS", "OFF")
+        .define("DEACTIVATE_LZ4", bool2opt(!cfg!(feature = "lz4")))
+        // .define("DEACTIVATE_SNAPPY", bool2opt(!cfg!(feature = "snappy")))
+        .define("DEACTIVATE_ZLIB", bool2opt(!cfg!(feature = "zlib")))
+        .define("DEACTIVATE_ZSTD", bool2opt(!cfg!(feature = "zstd")))
         .out_dir(out_dir.join("c-blosc-build"));
     let profile = build.get_profile().to_string();
     let blosc_build_dir = build.build();
