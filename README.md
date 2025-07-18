@@ -14,10 +14,10 @@ The crate has zero runtime dependencies.
 To use this library, add the following to your `Cargo.toml`:
 ```toml
 [dependencies]
-blosc-rs = "0.3"
+blosc-rs = "0.4"
 
 # Or alternatively, rename the crate to `blosc`
-blosc = { package = "blosc-rs", version = "0.3" }
+blosc = { package = "blosc-rs", version = "0.4" }
 ```
 
 In the following example we compress a vector of integers and then decompress it back:
