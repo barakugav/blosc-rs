@@ -49,20 +49,23 @@
 //! let decompressed = decoder.decompress(numinternalthreads).expect("failed to decompress");
 //! assert_eq!(data_bytes, decompressed);
 //! ```
+//!
+//! ## Features
+//! Cargo features enable or disable support for various compression codecs such as `zstd`, `lz4` and `zlib`.
+//! The `blosclz` codec is always supported.
 
 use std::borrow::Cow;
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::io::Read;
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 
+/// The version of the crate.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// The version of the underlying C-blosc library used by this crate.
 pub const BLOSC_C_VERSION: &str = {
-    let version = match CStr::from_bytes_until_nul(blosc_sys::BLOSC_VERSION_STRING) {
-        Ok(v) => v,
-        Err(_) => unreachable!(),
-    };
-    match version.to_str() {
+    match blosc_sys::BLOSC_VERSION_STRING.to_str() {
         Ok(s) => s,
         Err(_) => unreachable!(),
     }
@@ -173,6 +176,10 @@ impl Encoder {
     }
 
     /// Compress a block of data in the `src` buffer into the `dst` buffer.
+    ///
+    /// # Returns
+    ///
+    /// The number of bytes copied into the destination buffer.
     pub fn compress_into(
         &self,
         src: &[u8],
@@ -271,27 +278,35 @@ pub enum Shuffle {
 }
 
 /// Represents the compression algorithms supported by Blosc.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(missing_docs)]
 pub enum CompressAlgo {
     Blosclz,
+    #[cfg(feature = "lz4")]
     Lz4,
+    #[cfg(feature = "lz4")]
     Lz4hc,
+    // #[cfg(feature = "snappy")]
     // Snappy,
+    #[cfg(feature = "zlib")]
     Zlib,
+    #[cfg(feature = "zstd")]
     Zstd,
-    Other(CString),
 }
 impl AsRef<CStr> for CompressAlgo {
     fn as_ref(&self) -> &CStr {
         match self {
             CompressAlgo::Blosclz => c"blosclz",
+            #[cfg(feature = "lz4")]
             CompressAlgo::Lz4 => c"lz4",
+            #[cfg(feature = "lz4")]
             CompressAlgo::Lz4hc => c"lz4hc",
+            // #[cfg(feature = "snappy")]
             // CompressAlgo::Snappy => c"snappy",
+            #[cfg(feature = "zlib")]
             CompressAlgo::Zlib => c"zlib",
+            #[cfg(feature = "zstd")]
             CompressAlgo::Zstd => c"zstd",
-            CompressAlgo::Other(c) => c.as_ref(),
         }
     }
 }
@@ -299,7 +314,7 @@ impl AsRef<CStr> for CompressAlgo {
 /// A decoder for Blosc compressed data.
 ///
 /// This struct is not the usual stream-like decoder that commonly exists in Rust compression libraries, but rather
-/// an array-like object that allows random access to elements in the compressed data or decoding the entire buffer.
+/// an array-like object that allows random access to items in the compressed data or decoding the entire buffer.
 /// This is because blosc is not a streaming library, and it operates on the entire data buffer at once.
 ///
 /// The compressed data is held in memory within the decoder, and decoding is done either by decompressing the entire
@@ -367,17 +382,18 @@ impl<'a> Decoder<'a> {
         let src: Cow<'a, [u8]> = src.into();
 
         // Validate
-        let mut dst_len = 0;
+        let mut dst_len = MaybeUninit::uninit();
         let status = unsafe {
             blosc_sys::blosc_cbuffer_validate(
                 src.as_ptr() as *const std::ffi::c_void,
                 src.len(),
-                &mut dst_len,
+                &mut dst_len as *mut MaybeUninit<usize> as *mut usize,
             )
         };
         if status < 0 {
             return Err(DecompressError::DecompressingError);
         }
+        let dst_len = unsafe { dst_len.assume_init() };
 
         let mut typesize = MaybeUninit::<usize>::uninit();
         let mut flags = MaybeUninit::<std::ffi::c_int>::uninit();
@@ -436,7 +452,7 @@ impl<'a> Decoder<'a> {
     ///
     /// # Returns
     ///
-    /// A `Result` containing the number of bytes written to the `dst` buffer, or a `DecompressError` if an error occurs.
+    /// The number of bytes copied into the destination buffer.
     pub fn decompress_into(
         &self,
         dst: &mut [MaybeUninit<u8>],
@@ -473,7 +489,22 @@ impl<'a> Decoder<'a> {
         self.src
     }
 
-    /// Get an element at the specified index.
+    /// Get the number of bytes in the *uncompressed* data.
+    pub fn nbytes(&self) -> usize {
+        self.dst_len
+    }
+
+    /// Get the size of each item in the decoder's buffer.
+    pub fn typesize(&self) -> usize {
+        self.typesize
+    }
+
+    /// Get the number of items in the decoder's buffer.
+    pub fn items_num(&self) -> usize {
+        self.dst_len / self.typesize
+    }
+
+    /// Get an item at the specified index.
     ///
     /// Each item is `typesize` (as provided during encoding) bytes long, and the index is zero-based.
     ///
@@ -487,12 +518,16 @@ impl<'a> Decoder<'a> {
         self.items(idx..idx + 1)
     }
 
-    /// Get an element at the specified index and copy it into the provided destination buffer.
+    /// Get an item at the specified index and copy it into the provided destination buffer.
     ///
     /// Each item is `typesize` (as provided during encoding) bytes long, and the index is zero-based.
     ///
     /// Note that if the destination buffer is not aligned to the original data type's alignment, the caller should
     /// not transmute the decompressed data to original type, as this may lead to undefined behavior.
+    ///
+    /// # Returns
+    ///
+    /// The number of bytes copied into the destination buffer.
     pub fn item_into(
         &self,
         idx: usize,
@@ -501,7 +536,7 @@ impl<'a> Decoder<'a> {
         self.items_into(idx..idx + 1, dst)
     }
 
-    /// Get a range of elements specified by the index range.
+    /// Get a range of items specified by the index range.
     ///
     /// Each item is `typesize` (as provided during encoding) bytes long, and the index is zero-based.
     ///
@@ -521,12 +556,16 @@ impl<'a> Decoder<'a> {
         Ok(unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(dst) })
     }
 
-    /// Get a range of elements specified by the index range and copy them into the provided destination buffer.
+    /// Get a range of items specified by the index range and copy them into the provided destination buffer.
     ///
     /// Each item is `typesize` (as provided during encoding) bytes long, and the index is zero-based.
     ///
     /// Note that if the destination buffer is not aligned to the original data type's alignment, the caller should
     /// not transmute the decompressed data to original type, as this may lead to undefined behavior.
+    ///
+    /// # Returns
+    ///
+    /// The number of bytes copied into the destination buffer.
     pub fn items_into(
         &self,
         idx: std::ops::Range<usize>,
@@ -622,10 +661,15 @@ mod tests {
             let compressor = {
                 let compressors = [
                     CompressAlgo::Blosclz,
+                    #[cfg(feature = "lz4")]
                     CompressAlgo::Lz4,
+                    #[cfg(feature = "lz4")]
                     CompressAlgo::Lz4hc,
+                    // #[cfg(feature = "snappy")]
                     // CompressAlgo::Snappy,
+                    #[cfg(feature = "zlib")]
                     CompressAlgo::Zlib,
+                    #[cfg(feature = "zstd")]
                     CompressAlgo::Zstd,
                 ];
                 compressors[rand.random_range(0..compressors.len())].clone()
@@ -653,16 +697,19 @@ mod tests {
                 .unwrap();
 
             let decoder = crate::Decoder::new(&compressed).unwrap();
-            let items_num = src.len() / typesize;
-            if items_num > 0 {
+            assert_eq!(typesize, decoder.typesize());
+            assert_eq!(src.len(), decoder.nbytes());
+            assert_eq!(src.len() / typesize, decoder.items_num());
+
+            if decoder.items_num() > 0 {
                 for _ in 0..10 {
-                    let idx = rand.random_range(0..items_num);
+                    let idx = rand.random_range(0..decoder.items_num());
                     let item = decoder.item(idx).unwrap();
                     assert_eq!(item, src[idx * typesize..(idx + 1) * typesize]);
                 }
                 for _ in 0..10 {
-                    let start = rand.random_range(0..items_num);
-                    let end = rand.random_range(start..items_num);
+                    let start = rand.random_range(0..decoder.items_num());
+                    let end = rand.random_range(start..decoder.items_num());
                     let items = decoder.items(start..end).unwrap();
                     assert_eq!(items, src[start * typesize..end * typesize]);
                 }

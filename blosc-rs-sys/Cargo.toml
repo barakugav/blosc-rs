@@ -19,6 +19,12 @@ categories = ["compression", "external-ffi-bindings"]
 bindgen = "0.72"
 cmake = "0.1"
 
+[features]
+lz4 = []
+# snappy = []
+zlib = []
+zstd = []
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

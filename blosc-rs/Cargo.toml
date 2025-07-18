@@ -5,7 +5,7 @@ edition = "2021"
 # println!("cargo::..."), c-literals
 rust-version = "1.77.0"
 authors = ["Barak Ugav <barakugav@gmail.com>"]
-description = "Unsafe Rust bindings for blosc - a blocking, shuffling and lossless compression library"
+description = "Safe Rust bindings for blosc - a blocking, shuffling and lossless compression library"
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/barakugav/blosc-rs"
@@ -17,6 +17,12 @@ blosc-sys = { package = "blosc-rs-sys", path = "../blosc-rs-sys", version = "0.1
 
 [dev-dependencies]
 rand = "0.9"
+
+[features]
+lz4 = ["blosc-sys/lz4"]
+# snappy = ["blosc-sys/snappy"]
+zlib = ["blosc-sys/zlib"]
+zstd = ["blosc-sys/zstd"]
 
 [package.metadata.docs.rs]
 all-features = true
