@@ -14,6 +14,7 @@ fn main() {
 fn generate_bindings() {
     let builder = bindgen::Builder::default()
         .use_core()
+        .generate_cstr(true)
         .header("c/bindings.h")
         .allowlist_file(".*/blosc.h")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));

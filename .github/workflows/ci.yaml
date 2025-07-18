@@ -39,7 +39,6 @@ jobs:
             blosc-rs-sys
 
       - name: Build blosc-rs-sys
-
         run: cargo build --all-features
         working-directory: blosc-rs-sys
       - name: Build blosc-rs
