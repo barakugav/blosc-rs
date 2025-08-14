@@ -1,14 +1,11 @@
 use std::path::PathBuf;
-use std::process::Command;
 
 fn main() {
     generate_bindings();
 
     // Build and link
-    if std::env::var("DOCS_RS").is_err() {
-        let lib_name = build_c_lib();
-        println!("cargo::rustc-link-lib=static={lib_name}");
-    }
+    let lib_name = build_c_lib();
+    println!("cargo::rustc-link-lib=static={lib_name}");
 }
 
 fn generate_bindings() {
@@ -29,31 +26,10 @@ fn generate_bindings() {
 fn build_c_lib() -> String {
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
 
-    let blosc_dir = out_dir.join("c-blosc");
-    if !blosc_dir.exists() {
-        Command::new("git")
-            .arg("--version")
-            .status()
-            .expect("git not found");
-        std::fs::create_dir_all(&blosc_dir).expect("Failed to create c-blosc directory");
-        Command::new("git")
-            .args([
-                "clone",
-                "--quiet",
-                "--depth",
-                "1",
-                "--branch",
-                "v1.21.6",
-                "https://github.com/Blosc/c-blosc.git",
-                ".",
-            ])
-            .current_dir(&blosc_dir)
-            .status()
-            .inspect_err(|_| {
-                let _ = std::fs::remove_dir_all(&blosc_dir);
-            })
-            .expect("Failed to clone c-blosc repository");
-    }
+    let blosc_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+        .join("third-party")
+        .join("c-blosc");
+    println!("cargo::rerun-if-changed={}", blosc_dir.display());
 
     let mut build = cmake::Config::new(&blosc_dir);
     let bool2opt = |b: bool| if b { "ON" } else { "OFF" };
