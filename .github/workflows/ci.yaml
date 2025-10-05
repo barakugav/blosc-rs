@@ -38,6 +38,10 @@ jobs:
           cache-workspaces: |
             blosc-rs
             blosc-rs-sys
+      - name: Setup cmake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: 3.31.x
 
       - name: Build blosc-rs-sys
         run: cargo build --all-features
