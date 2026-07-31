@@ -55,17 +55,15 @@ jobs:
           RUSTFLAGS: "-D warnings"
 
       - name: Clippy blosc-rs-sys
-        uses: auguwu/clippy-action@1.4.0
-        with:
-          working-directory: blosc-rs-sys
-          check-args: --all-features
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo clippy --all-features
+        working-directory: blosc-rs-sys
+        env:
+          RUSTFLAGS: "-D warnings"
       - name: Clippy blosc-rs
-        uses: auguwu/clippy-action@1.4.0
-        with:
-          working-directory: blosc-rs
-          check-args: --all-features
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo clippy --all-features
+        working-directory: blosc-rs
+        env:
+          RUSTFLAGS: "-D warnings"
 
       - name: Test blosc-rs-sys dev
         run: cargo test --all-features --profile dev
@@ -122,11 +120,10 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings"
       - name: cargo clippy blosc-rs
-        uses: auguwu/clippy-action@1.4.0
-        with:
-          working-directory: blosc-rs
-          check-args: --all-features
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo clippy --all-features
+        working-directory: blosc-rs
+        env:
+          RUSTFLAGS: "-D warnings"
 
       - name: cargo check blosc-rs-sys
         run: cargo check --all-features
@@ -134,8 +131,7 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings"
       - name: cargo clippy blosc-rs-sys
-        uses: auguwu/clippy-action@1.4.0
-        with:
-          working-directory: blosc-rs-sys
-          check-args: --all-features
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo clippy --all-features
+        working-directory: blosc-rs-sys
+        env:
+          RUSTFLAGS: "-D warnings"
