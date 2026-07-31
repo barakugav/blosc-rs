@@ -1,2 +1,0 @@
-[env]
-BLOSC_RS_DENY_WARNINGS = { value = "1" }
