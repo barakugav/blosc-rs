@@ -631,7 +631,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     use crate::{CompressAlgo, Level, Shuffle};
 
